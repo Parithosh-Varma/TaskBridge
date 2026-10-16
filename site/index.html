@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude–OpenCode Bridge — Claude dispatches, OpenCode executes</title>
+<meta name="description" content="Let Claude dispatch coding work to headless OpenCode agents via MCP, with a durable SQLite queue in between.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2316161A'/><text x='16' y='22' font-family='monospace' font-size='16' fill='%23F7F7F3' text-anchor='middle'>⇄</text></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<nav class="nav"><div class="wrap nav-in">
+  <a class="brand" href="index.html"><span class="brand-mark">⇄</span>Claude–OpenCode Bridge</a>
+  <div class="nav-links" id="navLinks">
+    <a href="index.html" class="active">Overview</a>
+    <a href="quickstart.html">Quickstart</a>
+    <a href="architecture.html">Architecture</a>
+    <a href="faq.html">FAQ</a>
+  </div>
+  <a class="btn btn-solid btn-sm nav-cta" href="https://github.com/Parithosh-Varma/claude-opencode-bridge">GitHub →</a>
+  <button class="burger" id="burger" aria-label="Menu">☰</button>
+</div></nav>
+
+<header class="hero"><div class="wrap hero-grid">
+  <div>
+    <p class="eyebrow">Model Context Protocol · SQLite queue · Headless agents</p>
+    <h1>Claude dispatches.<br>OpenCode executes.</h1>
+    <p class="lede">Claude submits coding tasks over MCP. An auto-worker picks them up in about a minute, runs them with <span class="mono">opencode&nbsp;run</span>, and writes structured results back for Claude to read.</p>
+    <div class="hero-cta">
+      <a class="btn btn-solid" href="quickstart.html">Get started in 5 min</a>
+      <a class="btn btn-ghost" href="https://github.com/Parithosh-Varma/claude-opencode-bridge">View source</a>
+    </div>
+    <div class="hero-meta"><span><b>16</b> MCP tools</span><span><b>~60s</b> pickup</span><span><b>SQLite</b> durable queue</span><span><b>2-way</b> questions</span></div>
+  </div>
+  <div class="lane" aria-label="Animated task relay: Claude to queue to worker">
+    <div class="lane-head"><span class="dot"></span>live relay · task t-3f2a</div>
+    <div class="lane-track">
+      <div class="node n1">Claude<small>submit_task</small></div>
+      <div class="node n2">tasks.db<small>SQLite queue</small></div>
+      <div class="node n3">worker<small>opencode run</small></div>
+      <div class="chip"><i></i>t-3f2a · pending</div>
+      <div class="chip c2"><i></i>t-3f2a · running</div>
+      <div class="chip c3"><i></i>t-3f2a · completed</div>
+    </div>
+    <div class="lane-log">
+      <div><b>✓</b> claimed · priority 5 · model cat-jam-free</div>
+      <div><span class="w">◷</span> streaming → task_logs/t-3f2a.log</div>
+      <div><b>✓</b> completed · 14 files · diff attached</div>
+    </div>
+  </div>
+</div></header>
+
+<div class="wrap">
+<section class="block">
+  <p class="eyebrow">Why it exists</p>
+  <h2>Planners plan.<br>Runners run.</h2>
+  <p class="lede">Claude is a great planner but can't touch your machine. OpenCode runs code locally but lives outside Claude's context. The bridge connects them with a queue that survives restarts, supports retries and priorities, and lets either side ask questions mid-task.</p>
+  <div class="grid3" style="margin-top:28px">
+    <div class="card"><h3>Delegate, don't babysit</h3><p>One <span class="mono">submit_task</span> call fans out to a headless agent. Poll once with <span class="mono">wait_for</span> instead of looping.</p></div>
+    <div class="card"><h3>Answers, not just logs</h3><p>Every completion carries a structured summary, files touched, tests run, open questions — plus a git-aware diff.</p></div>
+    <div class="card"><h3>Stuck? It asks back</h3><p>The worker can pause a task with a question. You answer, it resumes with your answer in context.</p></div>
+  </div>
+</section>
+
+<section class="block">
+  <p class="eyebrow">Under the hood</p>
+  <h2>Sixteen tools, one queue.</h2>
+  <div class="strip">
+    <span class="tag">submit_task</span><span class="tag">submit_batch ×20</span><span class="tag">wait_for</span><span class="tag">get_task_result</span><span class="tag">get_task_logs</span><span class="tag">answer_task</span><span class="tag">list_tasks</span><span class="tag">queue_status</span><span class="tag">worker_heartbeat</span><span class="tag">add_task_note</span><span class="tag">cancel_task</span><span class="tag">clear_finished</span><span class="tag">list_models</span><span class="tag">set_default_model</span><span class="tag">ping</span><span class="tag">+ reverse: claude_ask ×6</span>
+  </div>
+  <div class="grid2" style="margin-top:24px">
+    <div class="card"><h3>Per-task isolation</h3><p>Each task can run on its own branch in a <span class="mono">git worktree</span>, auto-committed on success and cleaned up after.</p></div>
+    <div class="card"><h3>Honest permissions</h3><p><span class="mono">readonly</span> reverts writes and reports what was reverted. Network/shell limits are prompt-level and labeled as such — never oversold.</p></div>
+  </div>
+</section>
+
+<section class="block">
+  <p class="eyebrow">Taste</p>
+  <h2>Three calls. Done.</h2>
+  <div class="code" style="margin-top:24px">
+    <div class="code-bar"><span>claude → bridge</span><button data-copy="ex1">copy</button></div>
+<pre id="ex1"><span class="c"># 1. dispatch</span>
+<span class="f">submit_task</span>(title=<span class="s">"Add retry tests"</span>, working_dir=<span class="s">"/path/to/repo"</span>,
+  instructions=<span class="s">"Cover task_store retries. pytest must pass."</span>)  →  id: t-3f2a
+
+<span class="c"># 2. wait (no poll loop)</span>
+<span class="f">wait_for</span>(task_ids=[<span class="s">"t-3f2a"</span>], timeout_sec=<span class="k">120</span>)
+
+<span class="c"># 3. read the structured result</span>
+<span class="f">get_task_result</span>(task_id=<span class="s">"t-3f2a"</span>)  →  { summary, files_touched, tests_run, diff }</pre>
+  </div>
+  <div class="hero-cta">
+    <a class="btn btn-solid" href="quickstart.html">Read the quickstart</a>
+    <a class="btn btn-ghost" href="architecture.html">See architecture</a>
+  </div>
+</section>
+</div>
+
+<footer><div class="wrap foot">
+  <a class="brand" href="index.html"><span class="brand-mark">⇄</span>Bridge</a>
+  <a href="quickstart.html">Quickstart</a><a href="architecture.html">Architecture</a><a href="faq.html">FAQ</a>
+  <a href="https://github.com/Parithosh-Varma/claude-opencode-bridge">GitHub</a>
+  <span class="sp">© <span id="yr"></span> · MIT-minded, check repo for license</span>
+</div></footer>
+<script src="main.js"></script>
+</body>
+</html>
