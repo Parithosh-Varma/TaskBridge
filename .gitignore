@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Runtime / local state (never commit)
+tasks.db
+tasks.db-*
+*.log
+heartbeat.json
+.worker.lock
+.ngrok-domain
+task_logs/
+claude_jobs/
+worktrees/
+worker_config.json
+
+# macOS
+.DS_Store
+
+# LaunchAgent (local absolute paths)
+com.claude-opencode-bridge.worker.plist
