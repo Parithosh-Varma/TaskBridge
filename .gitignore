@@ -18,6 +18,9 @@ claude_jobs/
 worktrees/
 worker_config.json
 
+# wrangler / deploy cache
+.wrangler/
+
 # macOS
 .DS_Store
 
