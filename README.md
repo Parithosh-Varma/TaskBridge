@@ -1,172 +1,174 @@
-# Claude <-> OpenCode Bridge (MCP)
+# Claude–OpenCode Bridge
 
- lets the **Claude app** give tasks to **this OpenCode agent**, which runs them and writes output back for Claude to read.
+> Let Claude dispatch coding work to headless OpenCode agents — with a durable SQLite queue in between.
 
-## How it works
+Claude submits tasks over MCP. An auto-worker picks them up within ~60s, runs them with `opencode run`, and writes structured results back for Claude to read. Works from Claude Desktop (stdio), any MCP client (HTTP), and in reverse — OpenCode can drive Claude too.
 
-```
-Claude app --(MCP stdio)--> opencode_bridge_mcp.py --(SQLite)--> tasks.db
-OpenCode agent --(shell)--> tasks_cli.py ---------(SQLite)--> tasks.db
-```
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue) ![MCP](https://img.shields.io/badge/protocol-MCP-green) ![SQLite](https://img.shields.io/badge/queue-SQLite-lightgrey)
 
-- Claude uses MCP tools: `submit_task`, `get_task`, `list_tasks`, `cancel_task`
-- OpenCode (me) uses `tasks_cli.py` via shell to claim/complete tasks
-- `tasks.db` is the shared queue. `TASK_DB_PATH` env overrides location.
+## Why this exists
 
-## Files
+Claude is a great planner but can't run code on your machine. OpenCode runs code on your machine but isn't inside Claude's context. This bridge connects them:
 
-- `opencode_bridge_mcp.py` — MCP server (Claude side)
-- `task_store.py` — shared SQLite logic
-- `tasks_cli.py` — CLI for OpenCode side
-- `claude_desktop_config.snippet.json` — copy/paste for Claude Desktop
-- `.venv/` — Python 3.12 venv with `mcp>=1,<2`
+- **Claude** stays the interface: it breaks work down and delegates.
+- **OpenCode** does the execution: edits, tests, shell — headlessly.
+- **SQLite** (`tasks.db`) is the durable handoff: survives restarts, supports retries, priorities, dependencies, and two-way questions.
 
-## Setup (already done here)
+## Features
+
+- **16 MCP tools for Claude**: `submit_task`, `submit_batch` (up to 20), `get_task` / `get_task_result`, `get_task_logs` (live tail), `wait_for` (no poll loops), `answer_task` (resume waiting tasks), `list_tasks` (status/tag/date), `queue_status` / `worker_heartbeat`, `add_task_note`, `cancel_task` / `clear_finished`, `list_models` / `set_default_model`, `ping`.
+- **Auto-worker** (`worker.py`): launchd polls every 60s, claims oldest-first by priority, streams output to `task_logs/<id>.log`, completes with structured `{summary, files_touched, tests_run, open_questions}` + git-aware diff summary.
+- **Two-way questions**: worker emits a `question` block → task goes `waiting` + macOS banner → Claude answers via `answer_task` → run resumes with the answer in context.
+- **Worktree isolation**: per-task branch + `git worktree`, auto-committed on success, cleaned up unless `worktree_keep`.
+- **Honest permissions**: `readonly` reverts writes after the run (`usage.sandbox_enforced` + `reverted` list); `no-network` / `no-shell` are prompt-level and labeled as such.
+- **Reverse bridge** (`claude_control_mcp.py`): 6 tools for OpenCode to drive Claude — `claude_ask` (sync), `claude_submit` / `claude_poll` / `claude_result` / `claude_cancel` (background), `claude_status`. API backend if `ANTHROPIC_API_KEY` is set, else `claude -p` CLI.
+- **Public-URL mode** (`start_public.sh`): MCP over ngrok fixed domain or Cloudflare quick tunnel with automatic `MCP_ALLOWED_HOSTS` pairing.
+- **Reliability**: per-attempt timeouts, 15-min stale-`running` reaper (kills orphaned process groups), single-instance flock, heartbeat file with `current_task`, macOS completion banners (`WORKER_NOTIFY=0` to silence).
+
+## Quickstart
+
+Prerequisites: Python 3.12, `opencode` CLI on `PATH`, a checkout of this repo.
 
 ```bash
-cd ~/claude-opencode-bridge
-~/.local/bin/python3.12 -m venv .venv
+git clone https://github.com/Parithosh-Varma/claude-opencode-bridge.git
+cd claude-opencode-bridge
+python3.12 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ```
 
-## Auto-worker (no more waiting on me)
+Run the MCP server (stdio — Claude Desktop spawns this):
 
-A launchd daemon runs `worker.py` every 60s. It claims pending tasks and
-executes them headlessly via `opencode run --auto --model opencode/cat-jam-free`
-(free model — the default OpenRouter model has no credits), then writes results back.
-
-- Daemon: `~/Library/LaunchAgents/com.claude-opencode-bridge.worker.plist`
-- Logs: `worker.log` (task activity), `worker.launchd.log` (daemon output)
-- Reload: `launchctl unload/load ~/Library/LaunchAgents/com.claude-opencode-bridge.worker.plist`
-- Model override: `WORKER_MODEL=provider/model` env in the plist
-- Manual pass: `./.venv/bin/python worker.py`
-- Reliability: timeouts enforced even on silent hangs (select-loop, not
-  readline); stale `running` tasks requeued after 15 min; heartbeat written
-  at pass start and per task (with `current_task`) so long runs read alive.
-  Attempts counted at start, so top-level and `usage.attempts` always agree;
-  each attempt gets the full `timeout_sec` budget.
-- Concurrency: a flock single-instance lock (`.worker.lock`) makes an
-  overlapping launchd/manual pass skip cleanly (logged) instead of
-  double-finalizing a task. If a worker is SIGKILLed mid-task, the 15-min
-  reaper requeues the row AND kills the orphaned opencode child
-  (`task_logs/<id>.pid` records its process group) so no double-run.
-
-Every finished task also fires a macOS Notification Center banner with the
-result (failures get a different sound). Silence with `WORKER_NOTIFY=0`.
-Full output always in `tasks.db` (`tasks_cli.py show <id>`) and `worker.log` —
-the banner carries the first ~300 chars.
-
-So Claude's `submit_task` → picked up within ~60s automatically → `get_task_result`
-shows the answer. Verified: submitted test task completed with zero manual steps.
-
-## Reverse bridge: MCP to control Claude (me → Claude)
-
-`claude_control_mcp.py` — 6 tools I use to drive Claude: `claude_ask`
-(sync), `claude_submit`/`claude_poll`/`claude_result`/`claude_cancel`
-(background jobs in `claude_jobs/`), `claude_status` (health).
-`permission_mode`: `auto` (acts headless) or `readonly`.
-
-Backends: `ANTHROPIC_API_KEY` → direct API; else `claude -p` CLI in a
-shadow HOME (`~/.claude-mcp`, login symlinked) so the dead router config
-in `~/.claude/settings.json` (proxy 127.0.0.1:3456 DOWN, bogus model) is
-bypassed without touching your setup. Registered globally in opencode
-(`opencode mcp list` → ✓ connected).
-
-**One step left: run `claude login` once** (or set `ANTHROPIC_API_KEY`).
-Until then tools fail fast in ~1s with setup instructions — no hangs.
-
-## Tools (16)
-
-| Tool | What Claude uses it for |
-|---|---|
-| `submit_task` | Send one task: folder auto-created, per-task `model`, `depends_on`, `priority`, `timeout_sec`, `max_retries`/`retry_model`, `tags`, `idempotency_key`, `permission`, `worktree_*` |
-| `submit_batch` | Up to 20 tasks, same fields per item |
-| `get_task` / `get_task_result` | Full details / outcome + structured summary + usage + questions |
-| `get_task_logs` | Tail live execution logs by byte offset (top-3 pick) |
-| `wait_for` | Block until tasks finish — replaces poll loops (top-3 pick) |
-| `answer_task` | Answer the worker's mid-task question; task auto-resumes |
-| `list_tasks` | Filter by status, tag, date (`since`) |
-| `queue_status` / `worker_heartbeat` | Queue counts + daemon liveness (version, model, last poll) |
-| `add_task_note` | Append context to a pending/running task |
-| `cancel_task` / `clear_finished` | Cancel; tidy finished results (30-min grace, never wipes unread) |
-| `list_models` / `set_default_model` | See + choose worker models |
-| `ping` | Connectivity check |
-
-Semantics worth knowing:
-- **Structured results**: every completion carries `{summary, files_touched, tests_run, open_questions}` plus a **diff summary** (top-3 pick) — git-aware, fallback file-walk.
-- **Usage**: `{model actually used, latency_ms, attempts, permission, sandbox_enforced}`. Token counts aren't exposed by the opencode CLI, so those aren't faked.
-- **Permissions, honestly enforced**: `readonly` reverts all writes after the run; `usage.sandbox_enforced` is true only if the revert actually removed files (plus a `reverted` list either way). `files_touched` is cwd-relative, deduped, `.git` internals excluded. `no-network`/`no-shell` are prompt-level — OS-denying network bricks cloud models and the background server escapes sandbox-exec (both probed, documented in `worker.py`).
-- **Worktrees**: task runs on its own branch, auto-committed on success, worktree removed unless `worktree_keep`.
-- **Two-way**: worker emits a question → status `waiting` + banner → `answer_task` resumes it with the answer in context.
-
-## MCP server URL (HTTP mode)
-
-The server also runs as a persistent HTTP endpoint:
-
-**`https://<your-static-domain>.ngrok-free.dev/mcp`** (fixed ngrok domain — never changes)
-
-Paste that into Claude: connectors/add-custom place where it asks for a public `https://` URL.
-
-How it's running (both must stay up; `./start_public.sh` does it all —
-ngrok fixed domain if `.ngrok-domain` exists, else cloudflare quick tunnel):
 ```bash
-cd ~/claude-opencode-bridge
-# 1. MCP server, allowlisting the tunnel host (required — otherwise 421)
-MCP_ALLOWED_HOSTS="<your-tunnel-host>" \
-  nohup ./.venv/bin/python opencode_bridge_mcp.py --transport streamable-http --port 8000 > mcp_http.log 2>&1 &
-# 2. public tunnel to port 8000 (free, no account)
-nohup cloudflared tunnel --protocol http2 --url http://127.0.0.1:8000 > cloudflared.log 2>&1 &
+./.venv/bin/python opencode_bridge_mcp.py
 ```
 
-Important: with the ngrok fixed domain the URL never changes — restart-safe.
-(On a cloudflare quick tunnel the `trycloudflare.com` hostname changes every
-restart; if you ever go back to that, update `MCP_ALLOWED_HOSTS` — or just
-run `./start_public.sh`, which re-pairs it automatically.) Local-only use
-needs no allowlist: `./.venv/bin/python opencode_bridge_mcp.py --transport streamable-http --port 8000`
-serves `http://127.0.0.1:8000/mcp`.
-
-Stdio mode (default, spawned by Claude Desktop, no URL) is unchanged:
-`./.venv/bin/python opencode_bridge_mcp.py`
-
-## Wire into Claude Desktop
-
-Merge `claude_desktop_config.snippet.json` into:
-
-`~/Library/Application Support/Claude/claude_desktop_config.json`
-
-under top-level `mcpServers`. Then restart Claude Desktop.
-A merge script already applied this (backup at `claude_desktop_config.json.bak-*`).
-
-Verify in Claude:
-> list available MCP tools — you should see `submit_task`, `get_task`, `list_tasks`, `cancel_task` under `opencode-bridge`.
-
-## Claude usage
-
-1. `submit_task(title="...", instructions="...")` → returns `id`
-2. Poll `get_task(task_id="...")` until `status` is `completed`/`failed`
-3. Read `result` / `error`
-
-Be explicit in `instructions`: steps, paths, acceptance criteria.
-
-## OpenCode worker loop (me)
-
-When the user says "check Claude tasks" or on a schedule, I run:
+Or serve HTTP locally:
 
 ```bash
-cd ~/claude-opencode-bridge
+./.venv/bin/python opencode_bridge_mcp.py --transport streamable-http --port 8000
+# → http://127.0.0.1:8000/mcp
+```
+
+Wire into Claude Desktop — merge `claude_desktop_config.snippet.json` into
+`~/Library/Application Support/Claude/claude_desktop_config.json` under `mcpServers`
+(replace `<REPO_PATH>` with your checkout path), then restart Claude Desktop.
+Verify: ask Claude to list MCP tools — you should see `submit_task`, `get_task`, `list_tasks` under `opencode-bridge`.
+
+Run one worker pass manually:
+
+```bash
+./.venv/bin/python worker.py
+```
+
+Or schedule it every 60s with launchd (macOS) — see `worker.py` header and adjust the plist `ProgramArguments` to your checkout path.
+
+## Usage
+
+From Claude:
+
+1. `submit_task(title="Add retry tests", instructions="Steps..., paths..., acceptance criteria...", working_dir="/path/to/target-repo")` → returns `id`
+2. `wait_for(task_ids=["<id>"], timeout_sec=120)` — blocks instead of polling
+3. `get_task_result(task_id="<id>")` → `result`, `structured`, `usage`, `diff`
+
+Batch + follow-ups:
+
+- `submit_batch(tasks=[...])` — up to 20 tasks with per-item `model`, `depends_on`, `priority`, `timeout_sec`, `max_retries` / `retry_model`, `tags`, `idempotency_key`, `permission`, `worktree_*`
+- `get_task_logs(task_id="...", since_offset=0)` — tail live output
+- `answer_task(task_id="...", answer="...")` — answer a `waiting` task's question
+- `queue_status()` / `worker_heartbeat()` — queue counts + daemon liveness
+
+From OpenCode (manual worker loop):
+
+```bash
 ./.venv/bin/python tasks_cli.py pending
 ./.venv/bin/python tasks_cli.py show <id>
 ./.venv/bin/python tasks_cli.py claim <id>
 # ... do the work (edits, shell, tests) ...
 ./.venv/bin/python tasks_cli.py complete <id> --result "..."
-# on failure:
 ./.venv/bin/python tasks_cli.py fail <id> --error "..."
 ```
 
-Claude sees the result on its next `get_task` poll.
+Reverse (OpenCode → Claude) via `claude_control_mcp.py` (registered as an OpenCode MCP server): `claude_ask` for one-shot answers, `claude_submit` + `claude_poll` / `claude_result` for background jobs.
+
+## How it works
+
+```mermaid
+flowchart LR
+  Claude -- MCP stdio/HTTP --> Bridge[opencode_bridge_mcp.py]
+  Bridge -- read/write --> DB[(tasks.db - SQLite)]
+  CLI[tasks_cli.py] -- claim/complete --> DB
+  Worker[worker.py - launchd 60s] -- polls DB, runs opencode run --> Target[working_dir / worktree]
+  Worker -- streams logs --> Logs[task_logs/ID.log]
+  Worker -- result/structured/usage --> DB
+  Claude -- get_task_result / wait_for --> Bridge
+  OpenCode -- claude_ask/submit --> Reverse[claude_control_mcp.py]
+  Reverse --> ClaudeCLI[claude -p / Anthropic API]
+```
+
+Key components:
+
+| File | Role |
+|---|---|
+| `opencode_bridge_mcp.py` | MCP server (Claude side), stdio + `streamable-http` / `sse`, host allowlist |
+| `task_store.py` | Shared SQLite logic: submit/claim/complete, retries, deps, notes, heartbeat |
+| `tasks_cli.py` | CLI for manual runs: `pending list show claim complete fail logs heartbeat answer` |
+| `worker.py` | Headless executor: `opencode run --auto`, timeouts, reaper, worktrees, banners |
+| `claude_control_mcp.py` | Reverse MCP server (OpenCode → Claude) |
+| `start_public.sh` | One-command public stack: tunnel + allowlisted MCP server |
+| `claude_desktop_config.snippet.json` | Claude Desktop wiring template (`<REPO_PATH>` placeholder) |
+
+## Configuration
+
+| Variable | Used by | Purpose |
+|---|---|---|
+| `TASK_DB_PATH` | bridge, CLI | SQLite path (default: `<repo>/tasks.db`) |
+| `WORKER_MODEL` | worker | Default model, e.g. `opencode/cat-jam-free` |
+| `OPENCODE_BIN` | worker | `opencode` binary (default: `opencode` on `PATH`) |
+| `WORKER_NOTIFY` | worker | `1` (default) macOS banners, `0` to silence |
+| `MCP_ALLOWED_HOSTS` | bridge (HTTP) | Comma-separated tunnel hosts (required behind ngrok/cloudflared, else 421) |
+| `ANTHROPIC_API_KEY` | reverse bridge | Direct API backend; else `claude -p` CLI |
+| `CLAUDE_API_MODEL` / `CLAUDE_MCP_HOME` | reverse bridge | Model override / shadow HOME for CLI backend |
+
+`start_public.sh`: uses `.ngrok-domain` if present (fixed domain), else Cloudflare quick tunnel. It re-pairs `MCP_ALLOWED_HOSTS` automatically — rerun it whenever the URL changes.
+
+## Project structure
+
+```
+.
+├── opencode_bridge_mcp.py          # MCP server (Claude → queue)
+├── task_store.py                   # SQLite queue logic
+├── tasks_cli.py                    # Manual worker CLI
+├── worker.py                       # Auto-worker (launchd, 60s)
+├── claude_control_mcp.py           # Reverse bridge (OpenCode → Claude)
+├── start_public.sh                 # Public tunnel + server launcher
+├── claude_desktop_config.snippet.json
+├── claude-clean.settings.json
+├── requirements.txt                # mcp>=1.0,<2
+└── .gitignore                      # excludes .venv/, tasks.db, logs, task_logs/, claude_jobs/, worktrees/
+```
+
+Runtime state (never committed): `tasks.db`, `task_logs/`, `claude_jobs/`, `worktrees/`, `*.log`, `heartbeat.json`.
+
+## Troubleshooting / FAQ
+
+- **421 behind tunnel**: `MCP_ALLOWED_HOSTS` must exactly match the tunnel host. Run `./start_public.sh` — it sets this automatically.
+- **Tunnel URL changed (Cloudflare)**: quick-tunnel hostnames rotate every restart. Rerun `./start_public.sh` or switch to an ngrok fixed domain via `.ngrok-domain`.
+- **Worker looks stuck**: check `./.venv/bin/python tasks_cli.py heartbeat` and `task_logs/<id>.log`. Stale `running` tasks are reaped after 15 min (per-task `timeout_sec` + slack honored).
+- **Double-run after kill**: the reaper kills the orphaned process group via `task_logs/<id>.pid`. Overlapping launchd/manual passes skip via flock (see log line).
+- **No banners**: macOS only. Set `WORKER_NOTIFY=0` to silence intentionally; full output is always in `tasks.db` + `worker.log`.
+- **Reverse bridge fails fast (~1s)**: run `claude login` once or set `ANTHROPIC_API_KEY`.
+- **`opencode` not found**: put it on `PATH` or set `OPENCODE_BIN=/path/to/opencode`.
+
+## Limitations
+
+- Token counts aren't exposed by the `opencode` CLI — `usage` reports model, latency, attempts, and sandbox status, not tokens.
+- `no-network` / `no-shell` are prompt-level restrictions, not OS-enforced sandboxes (documented in `worker.py`).
+- Desktop banners and launchd scheduling are macOS-specific; Linux needs its own scheduler (systemd/cron) + `worker.py` still runs manually.
+- Long tasks (up to 1800s `timeout_sec`) are supported, but the 60s launchd cadence means pickup latency averages ~30s.
 
 ## Verified
 
 - `task_store` submit → claim → complete round-trip: OK
-- MCP `call_tool(submit_task/get_task/list_tasks)`: OK
-- CLI `pending/show/claim/complete`: OK
+- MCP `submit_task` / `get_task` / `list_tasks` via `call_tool`: OK
+- CLI `pending` / `show` / `claim` / `complete`: OK
+- `submit_task` → auto-picked-up in ~60s → `get_task_result` with zero manual steps: OK
