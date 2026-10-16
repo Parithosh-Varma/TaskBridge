@@ -8,7 +8,8 @@
   var ctx = canvas.getContext("2d");
   var RAMP = " .:-=+*xX#%@";
   var LEVELS = RAMP.length - 1;
-  var INK = "248,239,220";
+  var INK = "255,250,243"; // reference cream
+  var GOLD = "244,211,58"; // reference gold for densest cells
 
   var reduced = window.matchMedia &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -23,14 +24,15 @@
   var gradKey = -1, bgGrad = null;
 
   // Scroll-synced palette stops: [sp, topRGB, bottomRGB].
+  // Sampled from the reference: tangerine day -> violet dusk -> indigo night.
   var STOPS = [
-    [0.00, [198, 63, 12], [233, 119, 26]],
-    [0.30, [148, 50, 13], [184, 82, 15]],
-    [0.55, [70, 25, 11], [104, 41, 13]],
-    [0.78, [21, 10, 17], [36, 15, 23]],
-    [1.00, [10, 5, 4], [22, 10, 6]]
+    [0.00, [224, 80, 45], [244, 150, 58]],
+    [0.32, [176, 62, 44], [208, 104, 52]],
+    [0.55, [84, 30, 66], [110, 44, 80]],
+    [0.78, [18, 24, 86], [26, 34, 110]],
+    [1.00, [13, 18, 70], [22, 30, 96]]
   ];
-  var PHASES = ["EYE", "RINGS", "ROWS", "FLOW", "EMBER"];
+  var PHASES = ["EYE", "RINGS", "ROWS", "FLOW", "CLAUDE"];
   var ACT_T = [6.0, 20.0, 34.0, 48.0, 62.0]; // static timestamps per act (reduced motion)
 
   var mx = 0.5, my = 0.42, emx = 0.5, emy = 0.42;
@@ -113,7 +115,7 @@
     g.textAlign = "center";
     g.textBaseline = "middle";
     var alpha = 0.30 + 0.70 * (alvl / 7);
-    g.fillStyle = tone ? "rgba(255,213,130," + alpha.toFixed(3) + ")"
+    g.fillStyle = tone ? "rgba(" + GOLD + "," + alpha.toFixed(3) + ")"
                        : "rgba(" + INK + "," + alpha.toFixed(3) + ")";
     g.fillText(RAMP[idx], CELL_W / 2, CELL_H / 2 + 1);
     sprites.set(key, c);
@@ -137,8 +139,8 @@
       var uu = u < -1.3 ? -1.3 : u > 1.3 ? 1.3 : u;
       var curve = cy + 0.20 * uu * uu;
       var band = (1 - ss(0.010, 0.050, Math.abs(py - curve))) * inX;
-      var lash = 0, lxs = [-0.55, -0.18, 0.18, 0.55];
-      for (i = 0; i < 4; i++) {
+      var lash = 0, lxs = [-0.60, -0.30, 0.0, 0.30, 0.60];
+      for (i = 0; i < 5; i++) {
         var lx = lxs[i] * a;
         var ly = cy + 0.20 * lxs[i] * lxs[i] + 0.007;
         d = sdSeg(px, py, lx, ly, lx + lxs[i] * 0.05, ly + 0.09);
@@ -146,15 +148,15 @@
         if (seg > lash) lash = seg;
       }
       var above = curve - py, below = py - curve, shade = 0;
-      if (above > 0) shade = Math.exp(-above * 7.0) * 0.55 * inX;
-      else if (below > 0) shade = Math.exp(-below * 9.0) * 0.22 * inX;
+      if (above > 0) shade = Math.exp(-above * 7.0) * 0.35 * inX;
+      else if (below > 0) shade = Math.exp(-below * 9.0) * 0.15 * inX;
       var eye = band;
       if (lash > eye) eye = lash;
       if (shade > eye) eye = shade;
       // Flanking cloud banks low left/right: frame the wordmark in clear space.
       var bxx = 0.66 * Math.min(1, Math.max(0.35, aspect / 1.5));
       var bdx = Math.abs(px) - bxx, bdy = py - 0.44 - 0.01 * Math.sin(t * 0.4);
-      var bank = 0.55 * Math.exp(-((bdx * bdx) / 0.040 + (bdy * bdy) / 0.017));
+      var bank = 0.42 * Math.exp(-((bdx * bdx) / 0.040 + (bdy * bdy) / 0.017));
       if (bank > eye) eye = bank;
       dark += wEye * eye;
     }
@@ -216,10 +218,15 @@
     }
 
     if (wEmber > 0.01) {
-      var er = Math.sqrt(px * px + (py + 0.02) * (py + 0.02));
-      var ering = 1 - ss(0.006, 0.045, Math.abs(er - 0.21));
-      var seal = (1 - ss(0.008, 0.05, er)) * 0.85;
-      dark += wEmber * (ering > seal ? ering : seal);
+      // Claude starburst, upper-right like a rising sun: 12 narrow tapered
+      // rays, deep valleys, slow rotation, dense core.
+      var sx = px - 0.40 * Math.min(1, aspect * 0.62), sy = py + 0.24;
+      var er = Math.sqrt(sx * sx + sy * sy);
+      var ang = Math.atan2(sy, sx) + t * 0.05;
+      var rays = Math.pow(Math.abs(Math.cos(6 * ang)), 1.6);
+      var rStar = 0.20 * (0.30 + 0.70 * rays);
+      var star = 1 - ss(-0.004, 0.006, er - rStar);
+      dark += wEmber * star;
     }
 
     dark += 0.05 * (0.5 + 0.5 * Math.sin(px * 47 + t * 0.8) * Math.sin(py * 53 - t * 0.7));

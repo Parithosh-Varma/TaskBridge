@@ -1,14 +1,15 @@
 :root{
-  --ivory:#F8EFDC;
-  --ivory-dim:rgba(248,239,220,.64);
-  --ivory-faint:rgba(248,239,220,.38);
-  --hair:rgba(248,239,220,.22);
+  --ivory:#FFFAF3;
+  --ivory-dim:rgba(255,250,243,.66);
+  --ivory-faint:rgba(255,250,243,.40);
+  --hair:rgba(255,250,243,.24);
+  --gold:#F4D33A;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{
-  background:#C63F0C;
+  background:#DF502D;
   color:var(--ivory);
   font-family:"Space Mono",ui-monospace,Menlo,Consolas,monospace;
   overflow-x:hidden;
@@ -18,8 +19,8 @@ body{
 .veil{
   position:fixed;inset:0;z-index:1;pointer-events:none;
   background:
-    radial-gradient(60vmin 44vmin at 50% 46%,rgba(110,24,3,.50),transparent 70%),
-    linear-gradient(to bottom,rgba(110,24,3,.22),transparent 32%,transparent 60%,rgba(8,3,2,.42));
+    radial-gradient(60vmin 44vmin at 50% 46%,rgba(12,8,24,.42),transparent 70%),
+    linear-gradient(to bottom,rgba(12,8,24,.20),transparent 32%,transparent 60%,rgba(8,4,16,.40));
 }
 /* fixed chrome */
 .topbar,.botbar{
@@ -61,7 +62,7 @@ main{position:relative;z-index:2}
 @keyframes bob{50%{transform:translate(-50%,7px)}}
 /* chapters */
 .chap{min-height:135vh;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px 20px}
-.chap-num{font-size:clamp(11px,1.4vw,14px);letter-spacing:.4em;text-indent:.4em;color:var(--ivory);margin:0 0 3vh}
+.chap-num{font-size:clamp(11px,1.4vw,14px);letter-spacing:.4em;text-indent:.4em;color:var(--gold);margin:0 0 3vh}
 .statement{
   font-family:"Cormorant Garamond",Georgia,serif;font-weight:500;
   font-size:clamp(46px,7.4vw,118px);line-height:1.0;letter-spacing:-.015em;margin:0;
