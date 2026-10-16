@@ -24,16 +24,18 @@
   var gradKey = -1, bgGrad = null;
 
   // Scroll-synced palette stops: [sp, topRGB, bottomRGB].
-  // Sampled from the reference: tangerine day -> violet dusk -> indigo night.
+  // Sampled from the reference: tangerine day -> violet dusk -> indigo night,
+  // with an ember seam for the phoenix and near-black for the finale.
   var STOPS = [
     [0.00, [224, 80, 45], [244, 150, 58]],
-    [0.32, [176, 62, 44], [208, 104, 52]],
-    [0.55, [84, 30, 66], [110, 44, 80]],
-    [0.78, [18, 24, 86], [26, 34, 110]],
-    [1.00, [13, 18, 70], [22, 30, 96]]
+    [0.28, [176, 62, 44], [208, 104, 52]],
+    [0.48, [84, 30, 66], [110, 44, 80]],
+    [0.68, [30, 16, 60], [44, 24, 84]],
+    [0.84, [40, 14, 26], [66, 22, 34]],
+    [1.00, [10, 5, 8], [22, 10, 12]]
   ];
-  var PHASES = ["EYE", "RINGS", "ROWS", "FLOW", "CLAUDE"];
-  var ACT_T = [6.0, 20.0, 34.0, 48.0, 62.0]; // static timestamps per act (reduced motion)
+  var PHASES = ["EYE", "RINGS", "ROWS", "FLOW", "RISE", "CLAUDE"];
+  var ACT_T = [6.0, 20.0, 34.0, 48.0, 55.0, 62.0]; // static timestamps per act (reduced motion)
 
   var mx = 0.5, my = 0.42, emx = 0.5, emy = 0.42;
   var inView = true, tabVisible = !document.hidden, rafId = 0, t0 = 0;
@@ -124,11 +126,12 @@
 
   /* Designed darkness field. px is aspect-corrected, py is not; units ~ vh/2. */
   function field(px, py, t, sp) {
-    var wEye = 1 - ss(0.10, 0.20, sp);
-    var wRings = ss(0.13, 0.23, sp) * (1 - ss(0.33, 0.43, sp));
-    var wRows = ss(0.37, 0.47, sp) * (1 - ss(0.62, 0.72, sp));
-    var wFlow = ss(0.64, 0.74, sp) * (1 - ss(0.86, 0.94, sp));
-    var wEmber = ss(0.88, 0.96, sp);
+    var wEye = 1 - ss(0.10, 0.18, sp);
+    var wRings = ss(0.13, 0.21, sp) * (1 - ss(0.30, 0.37, sp));
+    var wRows = ss(0.31, 0.39, sp) * (1 - ss(0.49, 0.57, sp));
+    var wFlow = ss(0.49, 0.57, sp) * (1 - ss(0.63, 0.71, sp));
+    var wPhx = ss(0.65, 0.72, sp) * (1 - ss(0.82, 0.88, sp));
+    var wEmber = ss(0.86, 0.93, sp);
     var dark = 0, d, i;
 
     if (wEye > 0.01) {
@@ -205,7 +208,8 @@
       var disc = (1 - ss(0.143, 0.159, mr)) * crater;
       dark += wFlow * (chev > disc ? chev : disc);
     }
-    var starAmp = wFlow > wEmber ? wFlow : wEmber;
+    var starAmp = wFlow > wPhx ? wFlow : wPhx;
+    if (wEmber > starAmp) starAmp = wEmber;
     if (starAmp > 0.01) {
       var gx = Math.floor(px * 230), gy = Math.floor(py * 230);
       var h = Math.sin(gx * 12.9898 + gy * 78.233) * 43758.5;
@@ -215,6 +219,22 @@
         star = ((h - 0.986) / 0.014) * 0.95 * tw;
       }
       dark += starAmp * star;
+    }
+
+    if (wPhx > 0.01 && typeof PHOENIX !== "undefined") {
+      // Sampled user artwork: nearest-neighbor density lookup with a slow
+      // drift so the print feels alive. ' '=0, '+'=0.5, '='=0.9.
+      var k = Math.min(0.96 * aspect / 1.818, 0.86);
+      var ox = 0.010 * Math.sin(t * 0.30), oy = 0.008 * Math.cos(t * 0.23);
+      var ax = (px - ox) / k, ay = (py - 0.02 - oy) / k;
+      var col = Math.floor((ax / 1.818 + 0.5) * PHOENIX.w);
+      var prow = Math.floor((ay + 0.5) * PHOENIX.h);
+      var pd = 0;
+      if (col >= 0 && col < PHOENIX.w && prow >= 0 && prow < PHOENIX.h) {
+        var ch = PHOENIX.rows[prow].charCodeAt(col);
+        pd = ch === 61 ? 0.9 : ch === 43 ? 0.5 : 0;
+      }
+      dark += wPhx * pd;
     }
 
     if (wEmber > 0.01) {
@@ -235,14 +255,15 @@
 
   function phaseOf(sp, t) {
     var w = [
-      1 - ss(0.10, 0.20, sp),
-      ss(0.13, 0.23, sp) * (1 - ss(0.33, 0.43, sp)),
-      ss(0.37, 0.47, sp) * (1 - ss(0.62, 0.72, sp)),
-      ss(0.64, 0.74, sp) * (1 - ss(0.86, 0.94, sp)),
-      ss(0.88, 0.96, sp)
+      1 - ss(0.10, 0.18, sp),
+      ss(0.13, 0.21, sp) * (1 - ss(0.30, 0.37, sp)),
+      ss(0.31, 0.39, sp) * (1 - ss(0.49, 0.57, sp)),
+      ss(0.49, 0.57, sp) * (1 - ss(0.63, 0.71, sp)),
+      ss(0.65, 0.72, sp) * (1 - ss(0.82, 0.88, sp)),
+      ss(0.86, 0.93, sp)
     ];
     var bi = 0;
-    for (var i = 1; i < 5; i++) if (w[i] > w[bi]) bi = i;
+    for (var i = 1; i < 6; i++) if (w[i] > w[bi]) bi = i;
     return bi;
   }
 
@@ -362,8 +383,8 @@
     for (var m = 0; m < revs.length; m++) revs[m].classList.add("in");
   }
   document.addEventListener("keydown", function (e) {
-    var ids = ["top", "orchestrate", "coordinate", "execute", "return"];
-    if (e.key >= "0" && e.key <= "4") {
+    var ids = ["top", "orchestrate", "coordinate", "execute", "rise", "return"];
+    if (e.key >= "0" && e.key <= "5") {
       var el = document.getElementById(ids[+e.key]);
       if (el) el.scrollIntoView({ behavior: reduced ? "auto" : "smooth" });
     }
