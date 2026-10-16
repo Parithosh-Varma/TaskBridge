@@ -13,8 +13,8 @@
   var reduced = window.matchMedia &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var mobile = window.innerWidth < 640;
-  var CELL_W = mobile ? 16 : 12;
-  var CELL_H = mobile ? 25 : 19;
+  var CELL_W = mobile ? 13 : 10;
+  var CELL_H = mobile ? 21 : 16;
   var DPR_CAP = mobile ? 1.5 : 2;
 
   var W = 0, H = 0, DPR = 1, cols = 0, rows = 0, aspect = 1;
@@ -100,8 +100,8 @@
     ctx.fillRect(0, 0, W, H);
   }
 
-  function sprite(idx, alvl) {
-    var key = idx * 8 + alvl;
+  function sprite(idx, alvl, tone) {
+    var key = idx * 8 + alvl + (tone ? 96 : 0);
     var s = sprites.get(key);
     if (s) return s;
     var c = document.createElement("canvas");
@@ -112,8 +112,9 @@
     g.font = makeFont(fontPx);
     g.textAlign = "center";
     g.textBaseline = "middle";
-    var alpha = 0.14 + 0.86 * (alvl / 7);
-    g.fillStyle = "rgba(" + INK + "," + alpha.toFixed(3) + ")";
+    var alpha = 0.30 + 0.70 * (alvl / 7);
+    g.fillStyle = tone ? "rgba(255,213,130," + alpha.toFixed(3) + ")"
+                       : "rgba(" + INK + "," + alpha.toFixed(3) + ")";
     g.fillText(RAMP[idx], CELL_W / 2, CELL_H / 2 + 1);
     sprites.set(key, c);
     return c;
@@ -129,35 +130,40 @@
     var dark = 0, d, i;
 
     if (wEye > 0.01) {
-      var a = 0.46 * Math.min(1, Math.max(0.30, aspect / 1.78));
-      var cy = -0.17 + 0.004 * Math.sin(t * 0.5);
+      var a = 0.58 * Math.min(1, Math.max(0.32, aspect / 1.78));
+      var cy = -0.28 + 0.004 * Math.sin(t * 0.5);
       var u = px / a;
       var inX = Math.abs(u) < 1.04 ? 1 : 0;
       var uu = u < -1.3 ? -1.3 : u > 1.3 ? 1.3 : u;
       var curve = cy + 0.20 * uu * uu;
-      var band = (1 - ss(0.008, 0.036, Math.abs(py - curve))) * inX;
+      var band = (1 - ss(0.010, 0.050, Math.abs(py - curve))) * inX;
       var lash = 0, lxs = [-0.55, -0.18, 0.18, 0.55];
       for (i = 0; i < 4; i++) {
         var lx = lxs[i] * a;
         var ly = cy + 0.20 * lxs[i] * lxs[i] + 0.007;
-        d = sdSeg(px, py, lx, ly, lx + lxs[i] * 0.05, ly + 0.075);
+        d = sdSeg(px, py, lx, ly, lx + lxs[i] * 0.05, ly + 0.09);
         var seg = 1 - ss(0.005, 0.016, d);
         if (seg > lash) lash = seg;
       }
       var above = curve - py, below = py - curve, shade = 0;
-      if (above > 0) shade = Math.exp(-above * 7.0) * 0.38 * inX;
-      else if (below > 0) shade = Math.exp(-below * 9.0) * 0.18 * inX;
+      if (above > 0) shade = Math.exp(-above * 7.0) * 0.55 * inX;
+      else if (below > 0) shade = Math.exp(-below * 9.0) * 0.22 * inX;
       var eye = band;
       if (lash > eye) eye = lash;
       if (shade > eye) eye = shade;
+      // Flanking cloud banks low left/right: frame the wordmark in clear space.
+      var bxx = 0.66 * Math.min(1, Math.max(0.35, aspect / 1.5));
+      var bdx = Math.abs(px) - bxx, bdy = py - 0.44 - 0.01 * Math.sin(t * 0.4);
+      var bank = 0.55 * Math.exp(-((bdx * bdx) / 0.040 + (bdy * bdy) / 0.017));
+      if (bank > eye) eye = bank;
       dark += wEye * eye;
     }
 
     if (wRings > 0.01) {
       var rx = px, ry = py - 0.03;
       var r = Math.sqrt(rx * rx + ry * ry);
-      var v = (r * 4.6 - t * 0.22) % 1; if (v < 0) v += 1;
-      var ring = (1 - ss(0.02, 0.13, Math.abs(v - 0.5))) * Math.exp(-r * 1.7);
+      var v = (r * 5.0 - t * 0.22) % 1; if (v < 0) v += 1;
+      var ring = (1 - ss(0.03, 0.18, Math.abs(v - 0.5))) * Math.exp(-r * 1.5);
       var dot = 1 - ss(0.008, 0.045, r);
       var rings = ring > dot ? ring : dot;
       dark += wRings * rings;
@@ -190,7 +196,7 @@
       var yc = 0.04;
       var sv = px - 0.42 * Math.abs(py - yc);
       var f = (sv * 2.4 - t * 0.32) % 1; if (f < 0) f += 1;
-      var chev = (1 - ss(0.03, 0.15, Math.abs(f - 0.5))) * 0.9 * Math.exp(-Math.abs(py - yc) * 1.6);
+      var chev = (1 - ss(0.03, 0.15, Math.abs(f - 0.5))) * Math.exp(-Math.abs(py - yc) * 1.3);
       var mdx = px - 0.44 * Math.min(1, aspect * 0.62), mdy = py + 0.24;
       var mr = Math.sqrt(mdx * mdx + mdy * mdy);
       var crater = 0.72 + 0.28 * Math.sin(px * 95.0) * Math.sin(py * 87.0);
@@ -216,8 +222,8 @@
       dark += wEmber * (ering > seal ? ering : seal);
     }
 
-    dark += 0.10 * (0.5 + 0.5 * Math.sin(px * 47 + t * 0.8) * Math.sin(py * 53 - t * 0.7));
-    return clamp01(0.05 + dark * 0.92);
+    dark += 0.05 * (0.5 + 0.5 * Math.sin(px * 47 + t * 0.8) * Math.sin(py * 53 - t * 0.7));
+    return clamp01(0.015 + dark * 0.98);
   }
 
   function phaseOf(sp, t) {
@@ -249,10 +255,10 @@
         var px = (nx - (emx - 0.5) * 0.04 - 0.5) * aspect;
         var py = (ny - (emy - 0.5) * 0.04 - sp * 0.05 - 0.5);
         L = field(px, py, t, sp);
-        idx = Math.min(LEVELS, (Math.pow(L, 0.8) * (LEVELS + 1)) | 0);
+        idx = Math.min(LEVELS, (Math.pow(L, 0.65) * (LEVELS + 1)) | 0);
         if (idx === 0) continue;
         al = (L * 8) | 0; if (al > 7) al = 7;
-        ctx.drawImage(sprite(idx, al), cI * CELL_W, y, CELL_W, CELL_H);
+        ctx.drawImage(sprite(idx, al, idx >= 9 ? 1 : 0), cI * CELL_W, y, CELL_W, CELL_H);
       }
     }
   }
