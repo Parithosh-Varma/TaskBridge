@@ -23,6 +23,8 @@ Claude is a great planner but can't run code on your machine. OpenCode runs code
 - **Honest permissions**: `readonly` reverts writes after the run (`usage.sandbox_enforced` + `reverted` list); `no-network` / `no-shell` are prompt-level and labeled as such.
 - **Reverse bridge** (`claude_control_mcp.py`): 6 tools for OpenCode to drive Claude — `claude_ask` (sync), `claude_submit` / `claude_poll` / `claude_result` / `claude_cancel` (background), `claude_status`. API backend if `ANTHROPIC_API_KEY` is set, else `claude -p` CLI.
 - **Public-URL mode** (`start_public.sh`): MCP over ngrok fixed domain or Cloudflare quick tunnel with automatic `MCP_ALLOWED_HOSTS` pairing.
+- **Live dispatch board** (`bridge_dashboard.html`, served as `GET /` on the same port/URL): warm dispatch-hall design with tally counts, per-task live log printouts, reverse Claude jobs, engine log tail, and a scrolling wire of the freshest output. Polls `/api/*` — the MCP endpoint at `/mcp` is untouched.
+- **Caller detection**: `submit_task`/`submit_batch` stamp the true caller from the MCP handshake (`clientInfo`), so Claude and ChatGPT dockets get their own origin marks automatically; explicit `origin` overrides. The worker claims tasks from both.
 - **Reliability**: per-attempt timeouts, 15-min stale-`running` reaper (kills orphaned process groups), single-instance flock, heartbeat file with `current_task`, macOS completion banners (`WORKER_NOTIFY=0` to silence).
 
 ## Quickstart

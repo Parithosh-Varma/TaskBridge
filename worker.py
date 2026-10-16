@@ -909,7 +909,7 @@ def main() -> int:
         log(f"queue read failed: {e}")
         heartbeat()
         return 1
-    pending = [t for t in pending if t.get("created_by") == "claude"]
+    pending = [t for t in pending if t.get("created_by") in ("claude", "chatgpt")]
     pending.sort(key=lambda t: (-int(t.get("priority") or 0), t.get("created_at") or ""))
     claimed = 0
     heartbeat(0)

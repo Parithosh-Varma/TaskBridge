@@ -15,13 +15,22 @@ OpenCode (this agent) flow — via shell, not MCP:
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import time
+from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse
 
 import task_store
 import worker as worker_mod
+
+HERE = Path(__file__).parent
+DASHBOARD_PATH = HERE / "bridge_dashboard.html"
+CLAUDE_JOBS_DIR = HERE / "claude_jobs"
 
 
 def _transport_security() -> TransportSecuritySettings | None:
@@ -50,7 +59,8 @@ def submit_task(title: str, instructions: str, working_dir: str = "", model: str
                timeout_sec: int = 600, max_retries: int = 0, retry_model: str = "",
                tags: list[str] | None = None, idempotency_key: str = "",
                permission: str = "full", worktree_repo: str = "",
-               worktree_branch: str = "", worktree_keep: bool = False) -> dict:
+               worktree_branch: str = "", worktree_keep: bool = False,
+               origin: str = "", ctx: Context | None = None) -> dict:
     """Submit a task for the OpenCode agent to run.
 
     Args:
@@ -71,11 +81,15 @@ def submit_task(title: str, instructions: str, working_dir: str = "", model: str
         worktree_repo: Git repo to scope the task in via `git worktree add`.
         worktree_branch: Branch for the worktree (default: repo HEAD).
         worktree_keep: Keep the worktree after success (default removes it).
+        origin: Optional override ('chatgpt' etc.). Empty = auto-detected
+            from your MCP handshake, shown as the origin mark on the board.
     Returns:
         Dict with task id, status=pending, and polling hint.
     """
+    who, raw = _resolve_origin(origin, ctx)
+    print(f"submit_task from client {raw!r} -> origin {who}", flush=True)
     task = task_store.submit_task(
-        title, instructions, working_dir, created_by="claude", model=model,
+        title, instructions, working_dir, created_by=who, model=model,
         depends_on=depends_on or [], priority=priority, timeout_sec=timeout_sec,
         max_retries=max_retries, retry_model=retry_model, tags=tags or [],
         idem_key=idempotency_key, permission=permission,
@@ -156,21 +170,26 @@ def add_task_note(task_id: str, note: str) -> dict:
 
 
 @mcp.tool()
-def submit_batch(tasks: list[dict]) -> list[dict]:
+def submit_batch(tasks: list[dict], origin: str = "", ctx: Context | None = None) -> list[dict]:
     """Submit multiple tasks at once. Each item accepts the submit_task fields:
     {title, instructions, working_dir?, model?, depends_on?, priority?,
     timeout_sec?, max_retries?, retry_model?, tags?, idempotency_key?,
     permission?, worktree_repo?, worktree_branch?, worktree_keep?}.
 
+    origin is an optional override; empty = auto-detected from your
+    MCP handshake and applied to the whole batch.
+
     Returns the created tasks (ids + polling hints). Max 20 per call.
     """
     if not tasks or len(tasks) > 20:
         raise ValueError("submit 1-20 tasks per call")
+    who, raw = _resolve_origin(origin, ctx)
+    print(f"submit_batch ({len(tasks)}) from client {raw!r} -> origin {who}", flush=True)
     out = []
     for t in tasks:
         task = task_store.submit_task(
             t.get("title", ""), t.get("instructions", ""),
-            t.get("working_dir", ""), created_by="claude",
+            t.get("working_dir", ""), created_by=who,
             model=t.get("model", ""), depends_on=t.get("depends_on", []),
             priority=t.get("priority", 0), timeout_sec=t.get("timeout_sec", 600),
             max_retries=t.get("max_retries", 0), retry_model=t.get("retry_model", ""),
@@ -312,6 +331,290 @@ def answer_task(task_id: str, answer: str) -> dict:
     qs = task.get("questions_json", "[]")
     return {"id": task["id"], "status": task["status"],
             "note": "answer recorded — task requeued, worker resumes shortly."}
+
+
+# ---------------- live dashboard (same port, same ngrok URL) ----------------
+# GET / serves a no-dependency HTML page that polls the /api/* endpoints
+# below, so opening the ngrok URL in a browser shows exactly what the
+# agent is doing: queue, per-task live logs, reverse Claude jobs, worker log.
+# None of this touches the MCP tools at /mcp.
+
+def _alive(pid: int) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _summary(t: dict) -> dict:
+    model = t.get("model", "") or ""
+    return {
+        "id": t.get("id", ""), "title": t.get("title", ""),
+        "status": t.get("status", ""), "model": model,
+        "origin": t.get("created_by", "") or "claude",
+        "provider": model.split("/")[0] if "/" in model else "",
+        "attempts": t.get("attempts", 0), "priority": t.get("priority", 0),
+        "created_at": t.get("created_at", ""), "updated_at": t.get("updated_at", ""),
+    }
+
+
+def _clean_origin(origin: str) -> str:
+    """Short lowercase origin tag: claude | chatgpt | opencode | ..."""
+    cleaned = "".join(c for c in (origin or "").strip().lower() if c.isalnum())[:20]
+    return cleaned or "claude"
+
+
+def _detect_origin(ctx: Context | None) -> str:
+    """True caller from the MCP handshake, not the caller's own label.
+
+    Every MCP client introduces itself in `initialize` with
+    clientInfo {name, version} before any tool call — Claude sends a
+    claude-* name, ChatGPT sends its own. Unknown clients return ""
+    (caller falls back to the default so the task still runs).
+    """
+    try:
+        params = ctx.session.client_params if ctx is not None else None
+        info = getattr(params, "clientInfo", None)
+        name = (f"{getattr(info, 'name', '') or ''} "
+                f"{getattr(info, 'version', '') or ''}").lower()
+    except Exception:
+        return ""
+    if "chatgpt" in name or "openai" in name:
+        return "chatgpt"
+    if "claude" in name or "anthropic" in name:
+        return "claude"
+    if "opencode" in name:
+        return "opencode"
+    return ""
+
+
+def _resolve_origin(origin: str, ctx: Context | None) -> tuple[str, str]:
+    """Final origin tag + raw handshake name (for the log).
+
+    An explicit non-default label wins; otherwise the handshake decides;
+    otherwise "claude" so the worker still picks the task up.
+    """
+    try:
+        params = ctx.session.client_params if ctx is not None else None
+        info = getattr(params, "clientInfo", None)
+        raw = str(getattr(info, "name", "") or "")
+    except Exception:
+        raw = ""
+    who = _clean_origin(origin)
+    if who in ("", "claude"):
+        who = _detect_origin(ctx) or "claude"
+    return who, raw
+
+
+def _heartbeat() -> dict:
+    out: dict = {"alive": False, "worker_default": worker_mod.default_model(),
+                 "version": worker_mod.WORKER_VERSION, "age_sec": None,
+                 "current_task": ""}
+    try:
+        hb = json.loads(worker_mod.HEARTBEAT_PATH.read_text())
+        out.update(hb)
+        from datetime import datetime, timezone
+        try:
+            ts = datetime.fromisoformat(hb["ts"])
+            out["age_sec"] = int((datetime.now(timezone.utc) - ts).total_seconds())
+            out["alive"] = out["age_sec"] <= 180
+        except (KeyError, ValueError):
+            pass
+    except (OSError, ValueError):
+        out["note"] = "no heartbeat yet — daemon may never have run"
+    return out
+
+
+def _claude_jobs(limit: int = 10) -> list[dict]:
+    jobs: list[dict] = []
+    if not CLAUDE_JOBS_DIR.is_dir():
+        return jobs
+    metas = sorted(CLAUDE_JOBS_DIR.glob("*.json"),
+                   key=lambda p: p.stat().st_mtime, reverse=True)[:max(1, min(limit, 20))]
+    for meta in metas:
+        try:
+            job = json.loads(meta.read_text())
+        except (OSError, ValueError):
+            continue
+        if job.get("status") == "running" and not _alive(job.get("pid", -1)):
+            job["status"] = "done"
+            try:
+                meta.write_text(json.dumps(job, indent=2))
+            except OSError:
+                pass
+        jobs.append({
+            "id": job.get("id", meta.stem),
+            "status": job.get("status", ""),
+            "backend": job.get("backend", ""),
+            "prompt": (job.get("prompt", "") or "")[:300],
+            "created_at": job.get("created_at", ""),
+        })
+    return jobs
+
+
+def _read_chunk(path: Path, offset: int, max_chars: int) -> tuple[str, int, int]:
+    try:
+        total = path.stat().st_size
+    except OSError:
+        return "", 0, 0
+    offset = max(0, min(int(offset or 0), total))
+    max_chars = max(100, min(int(max_chars or 8000), 50000))
+    with open(path, "rb") as f:
+        f.seek(offset)
+        chunk = f.read(max_chars)
+    return chunk.decode(errors="replace"), offset + len(chunk), total
+
+
+@mcp.custom_route("/", methods=["GET"])
+async def dashboard_page(request: Request) -> HTMLResponse:
+    try:
+        html = DASHBOARD_PATH.read_text()
+    except OSError:
+        html = "<h1>Bridge Live</h1><p>dashboard file missing.</p>"
+    return HTMLResponse(html)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> JSONResponse:
+    return JSONResponse({"ok": True})
+
+
+@mcp.custom_route("/api/overview", methods=["GET"])
+async def api_overview(request: Request) -> JSONResponse:
+    try:
+        counts_task = task_store.queue_status()
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:300]}, status_code=500)
+    try:
+        recent = [_summary(t) for t in task_store.list_tasks("all", 30, "", "")]
+    except Exception:
+        recent = []
+    hb = _heartbeat()
+    try:
+        tail, _, _ = _tail(worker_mod.HERE / "worker.log", 6000)
+    except Exception:
+        tail = ""
+    return JSONResponse({
+        "counts": counts_task.get("counts", {}),
+        "total": counts_task.get("total", 0),
+        "most_recent": counts_task.get("most_recent"),
+        "recent": recent,
+        "heartbeat": hb,
+        "worker_default": worker_mod.default_model(),
+        "claude_jobs": _claude_jobs(),
+        "worker_log_tail": tail,
+        "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    })
+
+
+def _tail(path: Path, max_chars: int) -> tuple[str, int, int]:
+    try:
+        total = path.stat().st_size
+    except OSError:
+        return "", 0, 0
+    with open(path, "rb") as f:
+        f.seek(max(0, total - max_chars))
+        data = f.read().decode(errors="replace")
+    return data, total, total
+
+
+@mcp.custom_route("/api/tasks", methods=["GET"])
+async def api_tasks(request: Request) -> JSONResponse:
+    status = request.query_params.get("status", "all")
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "50")), 100))
+    except ValueError:
+        limit = 50
+    try:
+        tasks = [_summary(t) for t in task_store.list_tasks(status, limit, "", "")]
+    except (ValueError, KeyError) as e:
+        return JSONResponse({"error": str(e)[:300]}, status_code=400)
+    return JSONResponse({"tasks": tasks})
+
+
+@mcp.custom_route("/api/task", methods=["GET"])
+async def api_task(request: Request) -> JSONResponse:
+    task_id = (request.query_params.get("id") or "").strip()
+    if not task_id:
+        return JSONResponse({"error": "id is required"}, status_code=400)
+    try:
+        off = int(request.query_params.get("log_offset", "0") or 0)
+    except ValueError:
+        off = 0
+    try:
+        nchars = int(request.query_params.get("log_chars", "30000") or 30000)
+    except ValueError:
+        nchars = 30000
+    nchars = max(100, min(nchars, 50000))
+    try:
+        task = task_store.get_task(task_id)
+    except KeyError:
+        return JSONResponse({"error": f"task not found: {task_id}"}, status_code=404)
+    log_path = worker_mod.LOGS_DIR / f"{task_id}.log"
+    if off < 0:
+        # tail mode: last nchars bytes (the interesting end of a finished log)
+        try:
+            off = max(0, log_path.stat().st_size - nchars)
+        except OSError:
+            off = 0
+    start = off
+    log, nxt, total = _read_chunk(log_path, off, nchars)
+    if not log_path.exists():
+        note = "no log yet — worker has not started this task"
+    elif task.get("status") in ("completed", "failed", "cancelled"):
+        note = "task finished — showing final log"
+    else:
+        note = "streaming live — auto-refreshes every 2s"
+    return JSONResponse({
+        "task": task, "log": log, "next_offset": nxt, "start_offset": start,
+        "total_bytes": total, "done": task.get("status") in ("completed", "failed", "cancelled"),
+        "note": note,
+    })
+
+
+@mcp.custom_route("/api/worker-log", methods=["GET"])
+async def api_worker_log(request: Request) -> JSONResponse:
+    try:
+        nchars = int(request.query_params.get("tail_chars", "15000") or 15000)
+    except ValueError:
+        nchars = 15000
+    tail, _, total = _tail(worker_mod.HERE / "worker.log", max(100, min(nchars, 50000)))
+    return JSONResponse({"log": tail, "total_bytes": total,
+                         "heartbeat": _heartbeat()})
+
+
+@mcp.custom_route("/api/claude-job", methods=["GET"])
+async def api_claude_job(request: Request) -> JSONResponse:
+    job_id = (request.query_params.get("id") or "").strip()
+    if not job_id:
+        return JSONResponse({"error": "id is required"}, status_code=400)
+    meta = CLAUDE_JOBS_DIR / f"{job_id}.json"
+    out_path = CLAUDE_JOBS_DIR / f"{job_id}.out"
+    if not meta.exists():
+        return JSONResponse({"error": f"job not found: {job_id}"}, status_code=404)
+    try:
+        job = json.loads(meta.read_text())
+    except ValueError:
+        return JSONResponse({"error": "job file corrupt"}, status_code=500)
+    if job.get("status") == "running" and not _alive(job.get("pid", -1)):
+        job["status"] = "done"
+        try:
+            meta.write_text(json.dumps(job, indent=2))
+        except OSError:
+            pass
+    try:
+        nchars = int(request.query_params.get("tail_chars", "8000") or 8000)
+    except ValueError:
+        nchars = 8000
+    tail = out_path.read_text()[-max(100, min(nchars, 50000)):] if out_path.exists() else ""
+    return JSONResponse({"job_id": job_id, "status": job.get("status", ""),
+                         "backend": job.get("backend", ""),
+                         "output_tail": tail})
 
 
 if __name__ == "__main__":

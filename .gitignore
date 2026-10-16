@@ -21,6 +21,9 @@ worker_config.json
 # wrangler / deploy cache
 .wrangler/
 
+# task working dirs (cloned target repos, snapshots)
+getinsomnia-clone*/
+
 # macOS
 .DS_Store
 
