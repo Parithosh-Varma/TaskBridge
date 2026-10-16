@@ -154,7 +154,7 @@ Runtime state (never committed): `tasks.db`, `task_logs/`, `claude_jobs/`, `work
 - **421 behind tunnel**: `MCP_ALLOWED_HOSTS` must exactly match the tunnel host. Run `./start_public.sh` — it sets this automatically.
 - **Tunnel URL changed (Cloudflare)**: quick-tunnel hostnames rotate every restart. Rerun `./start_public.sh` or switch to an ngrok fixed domain via `.ngrok-domain`.
 - **Worker looks stuck**: check `./.venv/bin/python tasks_cli.py heartbeat` and `task_logs/<id>.log`. Stale `running` tasks are reaped after 15 min (per-task `timeout_sec` + slack honored).
-- **Double-run after kill**: the reaper kills the orphaned process group via `task_logs/<id>.pid`. Overlapping launchd/manual passes skip via flock (see log line).
+- **Double-run after kill**: every attempt spawns `opencode run --standalone --title br-<id>-a<n>` (per-attempt argv marker, ps-visible). The reaper kills the orphaned CLI child **plus its ppid tree** (loop-until-empty, hard-capped so a matching bug can't mass-kill); a per-pass sweep catches tagged strays of non-running tasks. Reaper deadline is per-task (`max(900s, timeout_sec + 120s)`). macOS gives no session/env signal (`ps sess=` is 0 everywhere, `ps -E` shows no env), so ppid walk + argv marker are the whole toolkit — reparented-to-1/setsid grandchildren are the known residual. NOTE: never pass `--session` to the CLI: it makes free-tier models refuse to run.
 - **No banners**: macOS only. Set `WORKER_NOTIFY=0` to silence intentionally; full output is always in `tasks.db` + `worker.log`.
 - **Reverse bridge fails fast (~1s)**: run `claude login` once or set `ANTHROPIC_API_KEY`.
 - **`opencode` not found**: put it on `PATH` or set `OPENCODE_BIN=/path/to/opencode`.

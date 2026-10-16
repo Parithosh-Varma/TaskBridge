@@ -33,7 +33,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).parent
-OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
+
+
+def _resolve_opencode_bin() -> str:
+    """Absolute opencode path. Bare 'opencode' relies on PATH, which launchd
+    does not provide (default /usr/bin:/bin) — worker then fails with
+    'No such file or directory'. Prefer env, then PATH, then the standard
+    install location ~/.opencode/bin/opencode."""
+    import shutil as _shutil
+    env = (os.environ.get("OPENCODE_BIN") or "").strip()
+    if env:
+        return env
+    which = _shutil.which("opencode")
+    if which:
+        return which
+    fallback = Path.home() / ".opencode" / "bin" / "opencode"
+    if fallback.exists():
+        return str(fallback)
+    return "opencode"
+
+
+OPENCODE_BIN = _resolve_opencode_bin()
 WORKER_VERSION = "2.0.0"
 # Free model that works without paid credits; override with WORKER_MODEL env.
 WORKER_MODEL = os.environ.get("WORKER_MODEL", "opencode/cat-jam-free")
@@ -128,10 +148,11 @@ def requeue_stale_running(stale_after_sec: int = 900) -> int:
     return requeued
 
 
-def _orphan_looks_like_ours(pid: int) -> tuple[bool, str]:
+def _orphan_looks_like_ours(pid: int, tid: str) -> tuple[bool, str]:
     """Pid-reuse guard: only trust the pidfile if pid still leads its own
-    process group (start_new_session made pgid == pid) AND still runs
-    opencode. Anything else -> do not kill."""
+    process group (start_new_session made pgid == pid) AND its argv carries
+    our --title marker for THIS task (ps-visible, travels with the process,
+    unforgeable by pid reuse). Anything else -> do not kill."""
     try:
         out = subprocess.run(["ps", "-o", "pgid=,command=", "-p", str(pid)],
                              capture_output=True, text=True, timeout=10)
@@ -148,9 +169,102 @@ def _orphan_looks_like_ours(pid: int) -> tuple[bool, str]:
     cmd = parts[1] if len(parts) > 1 else ""
     if pgid != pid:
         return False, f"pgid {pgid} != {pid} (pid reused, not our group leader)"
-    if "opencode" not in cmd:
-        return False, f"leader is not an opencode child: {cmd[:80]!r}"
+    if f"{TITLE_PREFIX}{tid}-" not in cmd:
+        return False, f"no title marker for {tid}: {cmd[:80]!r}"
     return True, cmd[:80]
+
+
+TITLE_PREFIX = "br-"  # argv marker: --title br-<tid>-a<n>.
+# --title is ps-visible and (unlike --session) works with the opencode free
+# tier: any explicit --session makes `opencode run` reject free models with
+# "free tier can only be used from within OpenCode" (probed Oct 2026).
+# Ps-visible, travels with the process, unforgeable by pid reuse.
+TREE_KILL_ROUNDS = 4
+TREE_KILL_MAX = 300  # refuse bigger trees: a matching bug must never mass-kill
+
+
+def _ps_snapshot() -> list[tuple[int, int, str]]:
+    """One snapshot: (pid, ppid, command). NOTE: macOS `ps sess=` returns 0
+    for every process and `ps -E` exposes no env, so session matching and
+    env tagging are both impossible here (probed Oct 2026) — ppid walk plus
+    the argv marker below are the entire toolkit."""
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,ppid=,command="],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if out.returncode != 0:
+        return []
+    rows = []
+    for line in (out.stdout or "").splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        try:
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+        except ValueError:
+            pass
+    return rows
+
+
+def _title_marker(tid: str, attempt: int) -> str:
+    return f"{TITLE_PREFIX}{tid}-a{attempt}"
+
+
+def _task_tree_pids(root_pid: int) -> list[int]:
+    """Live ppid-descendants of root. ppid-only by necessity (see _snapshot).
+    Children in their own pgids are still found (pgid != ppid); only
+    reparented-to-1 or setsid grandchildren escape — the sweep covers tagged
+    roots, and the residual is documented, not fuzz-matched."""
+    procs = _ps_snapshot()
+    children: dict[int, list[int]] = {}
+    for pid, ppid, _cmd in procs:
+        children.setdefault(ppid, []).append(pid)
+    found: set[int] = set()
+    stack = [root_pid]
+    while stack:
+        for c in children.get(stack.pop(), []):
+            if c not in found:
+                found.add(c)
+                stack.append(c)
+    found.discard(root_pid)
+    return sorted(found)
+
+
+def _descendant_pids(root_pid: int) -> list[int]:
+    """Compatibility wrapper (tests/tools); ppid-walk via _task_tree_pids."""
+    return _task_tree_pids(root_pid)
+
+
+def _kill_tree(root_pid: int) -> tuple[int, bool]:
+    """Kill root's process group, then loop walk-and-kill until the tree is
+    empty (closes the fork-between-walk-and-kill race). Bounded rounds, plus
+    a hard cap: trees over TREE_KILL_MAX are refused outright, so a matching
+    bug can never become a mass-kill. Only kills pids present in a fresh
+    snapshot of the tree, so pid reuse can't redirect a kill (a reused pid
+    inside the walk is our fork). Returns (kills, clean)."""
+    import signal as _sig
+    import time as _time
+    kills = 0
+    try:
+        os.killpg(root_pid, _sig.SIGKILL)  # leader first: it can't fork anymore
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    for _ in range(TREE_KILL_ROUNDS):
+        tree = _task_tree_pids(root_pid)
+        if not tree:
+            break
+        if len(tree) > TREE_KILL_MAX:
+            return kills, False  # refuse: matching bug, never mass-kill
+        for p in tree:
+            try:
+                os.kill(p, _sig.SIGKILL)
+                kills += 1
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        _time.sleep(0.2)
+    clean = not _task_tree_pids(root_pid)
+    return kills, clean
 
 
 def _kill_orphan(task_id: str) -> None:
@@ -167,20 +281,67 @@ def _kill_orphan(task_id: str) -> None:
         log(f"{task_id}: pidfile holds {raw!r} — possible untracked orphan "
             "(worker died in the spawn window); requeueing without kill")
         return
-    ok, why = _orphan_looks_like_ours(pid)
+    ok, why = _orphan_looks_like_ours(pid, task_id)
     if ok:
-        try:
-            import signal as _sig
-            os.killpg(pid, _sig.SIGKILL)  # child was started with start_new_session
-            log(f"{task_id}: killed orphaned worker child pgid {pid} ({why[:60]})")
-        except (ProcessLookupError, PermissionError, OSError) as e:
-            log(f"{task_id}: orphan kill failed ({e})")
+        tree_n, clean = _kill_tree(pid)
+        log(f"{task_id}: killed orphaned worker child pgid {pid} "
+            f"(+{tree_n} tree kills, clean={clean})")
     else:
         log(f"{task_id}: orphan kill SKIPPED (pidfile={pid}): {why}")
     try:
         pid_path.unlink()
     except OSError:
         pass
+
+
+def _sweep_tagged_strays() -> int:
+    """Backstop (each pass, after the reaper): find CLI children carrying our
+    --title argv marker whose task is NOT running, and kill their trees.
+    The marker is set solely by run_task, so user processes are never touched;
+    and it travels with the process, so pid reuse can't misdirect the sweep
+    (re-validated per pid right before killing). Catches what the pidfile
+    path misses: spawn-window orphans and anything the reaper skipped. Tasks
+    still marked running are the reaper's jurisdiction — left alone."""
+    import re as _re
+    procs = _ps_snapshot()
+    if not procs:
+        return 0
+    pat = _re.compile(rf"{TITLE_PREFIX}([0-9a-f]{{12}})-a\d+")
+    by_task: dict[str, list[int]] = {}
+    for pid, _ppid, cmd in procs:
+        m = pat.search(cmd)
+        if m:
+            by_task.setdefault(m.group(1), []).append(pid)
+    if not by_task:
+        return 0
+    swept = 0
+    for tid, pids in by_task.items():
+        try:
+            status = task_store.get_task(tid)["status"]
+        except KeyError:
+            status = "missing"
+        if status == "running":
+            continue
+        fresh: list[int] = []  # re-validate marker per pid (pid-reuse safety)
+        for p in pids:
+            try:
+                chk = subprocess.run(["ps", "-o", "command=", "-p", str(p)],
+                                     capture_output=True, text=True, timeout=10)
+                if chk.returncode == 0 and f"{TITLE_PREFIX}{tid}-" in (chk.stdout or ""):
+                    fresh.append(p)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if not fresh:
+            continue
+        total, clean = 0, True
+        for root in fresh:
+            n, c = _kill_tree(root)
+            total += n
+            clean = clean and c
+        log(f"{tid}: stray sweep killed {total} tagged process(es) "
+            f"(task {status}, clean={clean})")
+        swept += 1
+    return swept
 
 
 def default_model() -> str:
@@ -463,7 +624,7 @@ def _revert_touched(workdir: str, touched: list[str]) -> list[str]:
     return reverted
 
 
-def run_task(task: dict, dep_outputs: list[dict]) -> dict:
+def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
     """Execute one task. Returns outcome dict (no DB writes here)."""
     import selectors as _selectors
     tid = task["id"]
@@ -477,7 +638,17 @@ def run_task(task: dict, dep_outputs: list[dict]) -> dict:
     #   network for inference) and the background server escapes sandbox-exec.
     # - no-shell: prompt-level only (opencode run has no tool-restriction flag).
     enforced = False  # set True below only if readonly revert removes files
-    cmd = [OPENCODE_BIN, "run", "--auto", "--model", model,
+    # --standalone: keeps the whole process tree under our CLI child, so the
+    # reaper can enumerate and kill descendants. Plain mode spawns shell-tool
+    # children under the shared `opencode-cli serve --service` daemon in their
+    # own pgids — invisible to us and unkillable by task (probed Oct 2026).
+    # --title: argv marker (br-<tid>-a<n>) identifying OUR CLI child in ps
+    # output — the reaper/sweep match on it, so pid reuse can't misdirect a
+    # kill. Per-attempt (no session bleed across retries). NOTE: --session
+    # cannot be used here: it makes free-tier models refuse to run.
+    cmd = [OPENCODE_BIN, "run", "--standalone",
+           "--title", _title_marker(tid, attempt_no),
+           "--auto", "--model", model,
            build_prompt(task, dep_outputs)]
     log_path = LOGS_DIR / f"{tid}.log"
     t0 = time.time()
@@ -645,7 +816,7 @@ def process_one(task: dict) -> None:
         return
     before = _snapshot(task["_cwd"])
     attempt_no = task_store.start_attempt(tid)
-    outcome = run_task(task, dep_outputs)
+    outcome = run_task(task, dep_outputs, attempt_no)
     usage = {"model": outcome.get("model"), "latency_ms": outcome.get("latency_ms"),
              "attempts": attempt_no,
              "permission": task.get("permission") or "full",
@@ -724,6 +895,15 @@ def main() -> int:
         return 0
     try:
         requeue_stale_running()
+    except Exception as e:
+        # helpers must NEVER brick the pass (a sweep crash once took down
+        # every pass with rc=1): log loudly, keep processing
+        log(f"reaper failed (non-fatal, investigate): {e}")
+    try:
+        _sweep_tagged_strays()
+    except Exception as e:
+        log(f"sweep failed (non-fatal, investigate): {e}")
+    try:
         pending = task_store.list_tasks("pending", MAX_TASKS_PER_PASS * 3)
     except Exception as e:
         log(f"queue read failed: {e}")
