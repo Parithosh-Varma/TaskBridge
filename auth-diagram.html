@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TaskBridge auth — diagram</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+body{margin:0;background:#14100b;color:#f2ead8;font-family:system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px}
+main>p.sub{color:#ab9c83;margin:0 0 18px}
+.card{background:#1e1712;border:1px solid #3a2f22;border-radius:10px;margin:0 0 12px;overflow:hidden;transition:border-color .25s ease}
+.card:hover{border-color:#5a4a33}
+.card[open]{border-color:#f2a00755}
+.card summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:14px 18px;font-weight:650;font-size:15px;user-select:none}
+.card summary::-webkit-details-marker{display:none}
+.card summary .num{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:26px;border-radius:50%;background:#f2a007;color:#14100b;font-size:13px;font-weight:800}
+.card summary .chev{margin-left:auto;color:#ab9c83;transition:transform .3s ease}
+.card[open] summary .chev{transform:rotate(90deg)}
+.cbody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .35s cubic-bezier(.45,0,.2,1)}
+.card[open] .cbody{grid-template-rows:1fr}
+.cinner{overflow:hidden;opacity:0;transform:translateY(-6px);transition:opacity .3s ease,transform .3s ease}
+.card[open] .cinner{opacity:1;transform:none}
+.cinner section{background:none!important;border:none!important;padding:4px 18px 0!important}
+.mermaid{margin:14px 18px 18px;overflow:auto}
+.cinner section + .mermaid{margin-top:6px}
+.todo{list-style:none;margin:14px 18px 18px;padding:0;counter-reset:step}
+.todo li{counter-increment:step;display:flex;margin:0 0 8px;background:#14100b;border:1px solid #3a2f22;border-radius:8px}
+.todo li:has(input:checked){border-color:#8fc39a66}
+.todo label{display:flex;gap:12px;align-items:flex-start;padding:11px 14px;cursor:pointer;font-size:13.5px;line-height:1.45;width:100%}
+.todo label::before{content:counter(step);flex:none;width:24px;height:24px;border-radius:50%;background:#282017;color:#ab9c83;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
+.todo li:has(input:checked) label::before{background:#8fc39a;color:#14100b}
+.todo input{accent-color:#f2a007;width:16px;height:16px;margin-top:2px;flex:none;cursor:pointer}
+.todo li:has(input:checked) label span,.todo li:has(input:checked) label{text-decoration:line-through;color:#ab9c83}
+.todo li{display:block}
+.pwrap{margin:2px 14px 14px 52px;border:1px dashed #3a2f22;border-radius:8px}
+.pwrap summary{font-size:12px;color:#ab9c83;padding:8px 12px;cursor:pointer;list-style:none}
+.pwrap summary::-webkit-details-marker{display:none}
+.pwrap summary:hover{color:#f2ead8}
+.pwrap pre{background:#14100b;border-top:1px solid #3a2f22;margin:0;padding:12px 14px;white-space:pre-wrap;font-size:12px;line-height:1.55;color:#efe4cc;font-family:ui-monospace,Menlo,Consolas,monospace;max-height:320px;overflow:auto}
+.copybtn{margin:0 12px 12px auto;display:block;background:#282017;color:#f2ead8;border:1px solid #3a2f22;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer}
+.copybtn:hover{border-color:#f2a007}
+</style>
+</head>
+<body>
+<main>
+<h1>TaskBridge — auth, product, problems</h1>
+<p class="sub">Eight cards, in build order. Click any header to open or close it.</p>
+<details class="card" open>
+<summary><span class="num">1</span>Auth flow — how a web task reaches your Mac<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart LR
+  subgraph Client["User's own web clients (free tiers)"]
+    ClaudeWeb[Claude web]
+    ChatGPT[ChatGPT web]
+    Phone[Phone browser]
+  end
+  subgraph Install["Install-time (once)"]
+    Gen["gen .bridge-token<br/>openssl rand -hex 32"] --> Print["show URL + token box"]
+    Print --> Paste["paste URL + Authorization header<br/>into MCP connector"]
+  end
+  subgraph Tunnel["Public edge"]
+    CF["Cloudflare quick tunnel<br/>random URL, rotates"]
+    NG["ngrok fixed domain<br/>optional"]
+  end
+  subgraph Mac["User's own machine"]
+    Gate["Bearer gate<br/>BRIDGE_AUTH_TOKEN<br/>401 unless Authorization matches<br/>/health open only"]
+    MCP["opencode_bridge_mcp.py<br/>/mcp + /api/*"]
+    DB[("tasks.db")]
+    Worker["worker.py<br/>opencode run"]
+    Board["Dispatch board<br/>token in sessionStorage"]
+  end
+  ClaudeWeb -->|URL + Bearer| CF
+  ChatGPT -->|URL + Bearer| CF
+  Phone -->|URL + Bearer| CF
+  CF --> Gate
+  NG --> Gate
+  Gate --> MCP
+  MCP --> DB
+  DB --> Worker
+  Worker --> DB
+  MCP --> Board
+  NoAuth["No-auth public URL<br/>anyone: submit_task = RCE"] -. rejected .-> Gate
+  GoogleCode["Google login in-code<br/>OAuth + redirects + rotation pain"] -. rejected .-> Gate
+  EdgeGoogle["Edge Google: Cloudflare Access<br/>optional later"] -. optional .-> Tunnel
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">2</span>Monetization — self-hosted delegation<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart TB
+  subgraph Buyer["Buyer — own machine, own keys, own quota"]
+    Install["One-command install"]
+    Delegate["Delegate from web or phone"]
+    Watch["Watch logs remotely"]
+    Install --> Delegate --> Watch
+  end
+  subgraph Product["What you sell"]
+    Free["Free core: queue + worker + board"]
+    Pack["Paid setup pack (one-time): installer + Bearer gate + tunnel pairing + phone board"]
+    Care["Updates + support (recurring)"]
+    Relay["Managed relay URL (recurring, optional)"]
+    Free --> Pack
+    Pack --> Care
+    Pack --> Relay
+  end
+  Buyer --> Product
+  Product --> Revenue["Revenue: setup + support + relay"]
+  Dead1["Shared free-quota pool"] -. rejected: bans + abuse .-> Revenue
+  Gate["Gating metric: install to first remote result in one command"] --> Revenue
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">3</span>Now vs Final — exposed to shippable<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart LR
+  subgraph Now["NOW — exposed"]
+    N1["Public ngrok URL live"]
+    N2["Auth: host allowlist only, no token"]
+    N3["Dashboard + /api/* open"]
+    N4["Manual install + host pairing"]
+    N5["Risk: URL holder = code on Mac"]
+    N1 --> N2 --> N3
+    N4 --> N1
+    N3 --> N5
+  end
+  subgraph Final["FINAL — shippable"]
+    F1["Install: gen .bridge-token + fixed-domain option"]
+    F2["Bearer gate fail-closed on /mcp + /api + board"]
+    F3["Dashboard token in sessionStorage"]
+    F4["One-command tunnel + host pairing"]
+    F5["Paid: setup pack + support + relay"]
+    F1 --> F2 --> F3
+    F4 --> F2
+    F2 --> F5
+  end
+  Now -->|"build auth + installer"| Final
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">4</span>Engineering stack — clients to execution<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart TB
+  subgraph Clients["Clients"]
+    Desk["Claude Desktop<br/>stdio spawn"]
+    Web["Claude / ChatGPT web<br/>streamable-http"]
+    BoardUser["Browser board user"]
+    OC["OpenCode agent<br/>reverse tools"]
+  end
+  subgraph Edge["Edge"]
+    NG2["ngrok / cloudflared tunnel"]
+    Allow["MCP_ALLOWED_HOSTS allowlist"]
+  end
+  subgraph Servers["MCP servers (:8000 / :8001)"]
+    Bridge["opencode_bridge_mcp.py :8000<br/>16 tools: submit/get/wait/answer/logs<br/>custom routes: / /health /api/*"]
+    Rev["claude_control_mcp.py :8001<br/>claude_ask/submit/poll/result/cancel/status"]
+  end
+  subgraph Store["Durable state"]
+    DB2[("tasks.db via task_store.py<br/>pending/running/waiting/done")]
+    Logs["task_logs/ per-task .log + .pid"]
+    HB["heartbeat.json"]
+    WT["worktrees/ git sandboxes"]
+  end
+  subgraph Exec["Execution (launchd 60s)"]
+    Sched["launchd tick"]
+    Wrk["worker.py<br/>claim > snapshot > opencode run > parse json/question > complete/retry/wait"]
+    CLI["opencode CLI<br/>--standalone --title br-id-aN --auto"]
+    Target["target repos<br/>working_dir / worktree branch"]
+  end
+  subgraph Obs["Observe"]
+    Board2["bridge_dashboard.html<br/>polls /api/*"]
+    WLog["worker.log + macOS banners"]
+  end
+  Desk -->|stdio| Bridge
+  Web --> NG2 --> Allow --> Bridge
+  BoardUser --> NG2
+  Bridge --> DB2
+  DB2 --> Wrk
+  Sched --> Wrk
+  Wrk --> CLI --> Target
+  Wrk --> Logs
+  Wrk --> DB2
+  Wrk --> HB
+  Wrk --> WT
+  Bridge --> Board2
+  DB2 --> Board2
+  Logs --> Board2
+  Wrk --> WLog
+  OC --> Rev
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">5</span>Web presence — landing, docs, console<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart TB
+  subgraph Cloud["Cloud (static, cheap)"]
+    Land["Landing page — YES<br/>promise + install command + demo"]
+    Docs["Docs — YES, reuse site/<br/>quickstart / architecture / faq"]
+    Console["Hosted console — ONLY with paid relay<br/>login, machines, billing, remote logs"]
+    Land --> Docs
+    Land --> Console
+  end
+  subgraph Local["Local (already built)"]
+    Board3["Dispatch board on :8000<br/>live, no login needed"]
+    API2["/mcp + /api/* on tunnel"]
+  end
+  Console -->|optional proxy| API2
+  Board3 -->|ships today| API2
+  Verdict["Verdict: ship landing + docs now<br/>console only when relay revenue exists"] --> Console
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">6</span>Top-tier gap — what enterprises demand<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart TB
+  subgraph Have["Have / planned"]
+    H1["Bearer token + fail-closed"]
+    H2["Local board + task logs"]
+    H3["One-command install"]
+    H1 --> H2 --> H3
+  end
+  subgraph TopTier["Top-tier company needs"]
+    I["Identity: SSO/SAML, SCIM, MFA enforced"]
+    A["Access: RBAC, least-privilege, per-env tokens, expiry + rotation"]
+    L["Audit: immutable audit log, SIEM export, who-ran-what"]
+    D["Data: encryption at rest, retention + deletion, DPA, region pinning"]
+    R["Reliability: SLA, status page, incident process, backups + restore drills"]
+    S["Security: SOC 2 Type II, pen test, vuln disclosure, SBOM"]
+    C["Commercial: contracts, invoicing, procurement review"]
+  end
+  Have -->|"gap before enterprise deals"| TopTier
+  Rule["Rule: build top-tier only against a signed design partner"] --> TopTier
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">7</span>Problem register — everything to fix, in order<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart TB
+  subgraph SEC["Security"]
+    S1["Public URL = RCE via submit_task"]
+    S2["No token, allowlist only"]
+    S3["URL leaks via history/logs/screenshots"]
+    S4["Secrets in env/files/logs"]
+    S5["Untrusted task instructions = prompt injection"]
+    S6["Weak origin tag, no per-client identity"]
+    S7["opencode CLI drift breaks parsing + reaper"]
+  end
+  subgraph REL["Reliability"]
+    R1["Tunnel rotates, clients break"]
+    R2["launchd dies on reboot/update"]
+    R3["Stale running tasks + orphan processes"]
+    R4["Disk fill: logs + worktrees"]
+    R5["tasks.db loss = audit loss"]
+    R6["No CPU/RAM caps per task"]
+  end
+  subgraph ABUSE["Abuse + limits"]
+    A1["Miners/malware from your IP"]
+    A2["Free-tier rate limits + bans"]
+    A3["Pooled quota violates ToS"]
+    A4["No rate-limit on 401s"]
+  end
+  subgraph PRIV["Privacy + data"]
+    D1["Logs print file contents + secrets"]
+    D2["No retention or delete path"]
+    D3["Board exposes titles to URL holders"]
+  end
+  subgraph BIZ["Product + business"]
+    B1["Multi-step install kills conversion"]
+    B2["Support exceeds code: tunnels/OS/models"]
+    B3["No pricing, refunds, invoicing story"]
+    B4["One incident kills indie trust"]
+  end
+  SEC --> REL --> ABUSE --> PRIV --> BIZ
+  BIZ --> Fix2["Fix order: contain > secrets > auth > durability > ceilings > install > charge"]
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">8</span>Pricing & payments — tiers and rails<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner"><pre class="mermaid">
+
+flowchart TB
+  subgraph Tiers["What the buyer pays"]
+    Free2["Free core — $0<br/>queue + worker + board"]
+    Pack2["Setup pack — ~$39 one-time<br/>installer + Bearer gate + tunnel pairing"]
+    Care2["Care — ~$9/mo or ~$79/yr<br/>updates + support"]
+    Relay2["Relay — ~$5-8/mo or bundled $9/mo<br/>stable URL, no shared compute"]
+    Ent["Enterprise — later only<br/>contracts + invoicing, design partner required"]
+    Free2 --> Pack2 --> Care2
+    Pack2 --> Relay2
+    Care2 -. later .-> Ent
+  end
+  subgraph Rails["How money moves"]
+    Pay["Buyer pays via Gumroad / Lemon Squeezy"]
+    Fee["~10% fees off the top"]
+    Out["Payout to you"]
+    Pay --> Fee --> Out
+  end
+  Tiers --> Rails
+  Rule2["Rule: no paywall until install-to-first-result is one command"] --> Pack2
+</pre></div></div>
+</details>
+<details class="card">
+<summary><span class="num">9</span>Build checklist — ordered implementation requests<span class="chev">▸</span></summary>
+<div class="cbody"><div class="cinner">
+<ol class="todo">
+<li><label><input type="checkbox" data-k="kill"> Kill the live public tunnel; audit pending tasks, worker.log, task_logs for abuse</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>You are in /Users/varma/Downloads/TaskBridge. The MCP bridge may have been exposed publicly with no auth. READ-ONLY audit, change nothing. 1) Run ./.venv/bin/python tasks_cli.py pending and summarize every pending and running task (id, title, created_by, working_dir). 2) Tail worker.log (last 80 lines) and list the newest files in task_logs/. 3) Flag anything the owner did not submit: unfamiliar created_by values, suspicious instructions (remote shell, miners, exfiltration), working_dir outside known repos. Output a table plus a verdict of CLEAN or SUSPICIOUS with evidence. Do not delete, cancel, or modify anything.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="token"> Token generation in start_public.sh: openssl rand -hex 32 into .bridge-token (chmod 600, gitignored)</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, wire Bearer-token generation into start_public.sh. 1) On start, if .bridge-token is missing, create it with openssl rand -hex 32 and chmod 600. 2) Export BRIDGE_AUTH_TOKEN from that file into the opencode_bridge_mcp.py process. 3) Reuse the file across restarts; add a --rotate flag that regenerates it. 4) Add .bridge-token to .gitignore. 5) Make the tunnel self-check curl send Authorization: Bearer TOKEN. Acceptance: delete .bridge-token, run the script, the file appears with 64 hex chars and mode 600; a second run reuses it; --rotate changes it. Never print the token into log files.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="gate"> Server gate in opencode_bridge_mcp.py: Bearer check on /mcp + /api/* + /, /health open, 401 + WWW-Authenticate</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, add a Bearer-token gate to opencode_bridge_mcp.py (FastMCP, mcp==1.30.0). Note the SDK custom_route handlers bypass the built-in OAuth, so hand-roll it: 1) Read BRIDGE_AUTH_TOKEN from env once at startup. 2) Write a helper that checks the request Authorization header against Bearer TOKEN using secrets.compare_digest, returning 401 JSON plus a WWW-Authenticate: Bearer header on failure. 3) Call it at the top of every custom_route handler (/, /api/overview, /api/task, /api/worker-log, /api/claude-job). 4) Protect /mcp the same way and prove it with a real HTTP test, not just code reading. 5) Leave /health open. Acceptance: curl with no header gives 401, wrong token gives 401, correct token gives 200 on /api/overview and the MCP endpoint; stdio transport is unaffected. Show the curl commands and outputs.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="dash"> Dashboard auth in bridge_dashboard.html: prompt once, sessionStorage, send header, 401 state</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, add token auth to bridge_dashboard.html (plain HTML and JS, no framework; the fetch helper is jget). 1) On load, if no token is in sessionStorage, show a token prompt overlay. 2) Send Authorization: Bearer TOKEN on every fetch. 3) On 401, show a wrong-or-missing-token state and re-prompt instead of silently keeping stale data. Acceptance: opening with no token shows the prompt; the correct token loads the board; a wrong token shows the 401 state. No token in URLs, no token in localStorage (sessionStorage only).</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="failclosed"> Fail-closed startup: tunnel mode + empty BRIDGE_AUTH_TOKEN = refuse to start</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, add fail-closed startup to the HTTP path. In opencode_bridge_mcp.py startup and start_public.sh: if the transport is streamable-http or sse and MCP_ALLOWED_HOSTS is set (tunnel mode) while BRIDGE_AUTH_TOKEN is empty, exit non-zero with a clear stderr message instead of serving open. Local stdio must keep working with no token. Acceptance: demonstrate the refusal with command and output, plus a normal local stdio smoke test.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="rotate"> Rotation: token show / rotate commands, tunnel check sends the token</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, add token show and rotate ergonomics. 1) Add a tiny CLI (extend tasks_cli.py or a new token command) with show (prints the current token) and rotate (regenerates .bridge-token, chmod 600). 2) start_public.sh gains --rotate passthrough and prints the token box (URL plus token plus what to paste into the MCP connector) on every start. 3) The token must never be written to mcp_http.log or worker.log. Acceptance: show prints the file content, rotate changes it and restarts cleanly, and a grep over the logs proves no token leakage.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="ratelimit"> Rate-limit + backoff on 401s</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, add 401 rate limiting to the opencode_bridge_mcp.py HTTP layer. Track failed auth attempts per client IP in memory; after 5 failures within 60 seconds, delay responses with exponential backoff and return 429 past a cap. Stdlib only, no new dependencies, and reset counters on success. Acceptance: a scripted curl loop showing 401s turning into 429, plus a valid-token request staying unaffected. Show the test script and its outputs.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="audit"> Per-submission audit log: IP, time, payload (don't trust origin tag)</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, add per-submission audit logging to the submit_task and submit_batch tools in opencode_bridge_mcp.py. Log timestamp, client IP, handshake client name, asserted origin tag, task id, title, and working_dir to a dedicated audit file (not stdout). Do not log the token; truncate instructions bodies to 300 chars. Record both the asserted origin and the handshake-derived one, and never use origin for access decisions. Acceptance: submit a task, show the new audit lines, and grep to prove no token leakage.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="durable"> Durability: back up tasks.db, verify worktree cleanup, cap log/disk size</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, harden durability. 1) Take a timestamped backup of tasks.db at worker pass start, keeping the last 7 and pruning older ones. 2) Verify worktree cleanup removes finished worktrees (show worktrees/ before and after a test task) and cap per-file task_logs size by truncating with a marker line, never silently deleting fresh logs. 3) Add a disk-space guard that refuses new attempts under 500MB free with a clear error. Acceptance: backup files appear and old ones are pruned; the low-disk path is tested, or unit-tested where a real low-disk state is infeasible.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="install"> One-command installer: tunnel + host pairing + token box print</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge, build the one-command installer. One script that checks python3.12 and the opencode binary on PATH, creates .venv if missing, installs requirements, generates .bridge-token if missing, starts the tunnel, pairs MCP_ALLOWED_HOSTS, waits for the URL, then prints one box with URL/mcp, the token, and exact paste instructions for Claude and ChatGPT connectors. Every step must be idempotent so re-runs are safe. Acceptance: run it twice from a clean checkout state; the second run changes nothing except restarting services. Paste the printed box with the token redacted as proof.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="site"> Ship site/ to Cloudflare Pages: landing + docs (quickstart, architecture, faq + token update)</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>In /Users/varma/Downloads/TaskBridge/site, update the docs for token auth. 1) faq.html: replace the is-my-tunnel-URL-safe answer with the Bearer-token story. 2) quickstart.html: add the token box step (URL plus Authorization header) for Claude and ChatGPT connectors. 3) architecture.html: document the gate (what is checked, what stays open, the fail-closed rule). Keep the existing visual style and fonts. Acceptance: the build check passes, pages render correctly, and no token values are committed.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="price"> Packaging: $39 setup pack, $9/mo care/relay bundle via Gumroad or Lemon Squeezy</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>This is a docs-and-packaging task in /Users/varma/Downloads/TaskBridge, no code changes. 1) Draft the README pricing section: free core, about $39 one-time setup pack, about $9 per month care and relay bundle, enterprise later. 2) Write the Gumroad-or-Lemon-Squeezy product checklist: product names, prices, what the buyer receives, refund policy, tax handling. 3) State the paywall rule: nothing paid until install-to-first-remote-result is one command. Output the README diff plus the checklist. Do not invent payment credentials or accounts.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+<li><label><input type="checkbox" data-k="later"> Later only: hosted relay, then enterprise (SSO, audit export, DPA) against a signed design partner</label>
+<details class="pwrap"><summary>Agent prompt</summary><pre>Do NOT build anything. In /Users/varma/Downloads/TaskBridge, write a one-page deferred plan covering hosted relay and enterprise needs (SSO/SAML, audit export, DPA, invoicing) with explicit triggers: build relay only after 10 paying setup-pack users ask for it, enterprise only against a signed design partner. Include the cost and abuse risks of running shared infra. If file creation is not allowed in your mode, return the page as your reply instead of writing it.</pre><button type="button" class="copybtn">Copy prompt</button></details></li>
+</ol>
+</div></div>
+</details>
+</main>
+<script>mermaid.initialize({startOnLoad:true,theme:'dark'})</script>
+<script>
+(function(){
+  var KEY = "bridge-checklist-v1";
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e) {}
+  document.querySelectorAll(".todo input[type=checkbox]").forEach(function(cb){
+    if (saved[cb.dataset.k]) cb.checked = true;
+    cb.addEventListener("change", function(){
+      saved[cb.dataset.k] = cb.checked;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e) {}
+    });
+  });
+  document.addEventListener("click", function(e){
+    if (e.target && e.target.classList && e.target.classList.contains("copybtn")) {
+      var pre = e.target.parentElement.querySelector("pre");
+      var done = function(){ e.target.textContent = "Copied"; setTimeout(function(){ e.target.textContent = "Copy prompt"; }, 1500); };
+      if (navigator.clipboard) navigator.clipboard.writeText(pre.innerText).then(done, function(){ e.target.textContent = "Select + Cmd+C"; });
+      else e.target.textContent = "Select + Cmd+C";
+    }
+  });
+})();
+</script>
+</body>
+</html>

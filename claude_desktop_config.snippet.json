@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "opencode-bridge": {
+    "taskbridge": {
       "command": "<REPO_PATH>/.venv/bin/python",
       "args": ["<REPO_PATH>/opencode_bridge_mcp.py"],
       "env": {

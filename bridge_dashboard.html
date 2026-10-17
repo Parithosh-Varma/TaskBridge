@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dispatch board — Claude–OpenCode wire</title>
+<title>Dispatch board — TaskBridge</title>
 <style>
   :root {
     --ink: #14100b;        /* hall black, warm */
@@ -160,13 +160,14 @@
 <body>
 <header class="mast">
   <div>
-    <div class="eyebrow">Form BR-1 · Claude–OpenCode wire</div>
+    <div class="eyebrow">Form BR-1 · TaskBridge</div>
     <h1>Dispatch board</h1>
     <div class="now" id="nowline">Connecting to the wire…</div>
   </div>
   <div class="mast-right">
     <div class="route"><span class="k">MCP</span><code id="mcpurl">/mcp</code></div>
     <div class="route"><span class="k">Board</span><code id="pageurl"></code></div>
+    <div class="route"><span class="k">Auth</span><code id="authstatus">🔒 secure</code></div>
     <div class="tallies">
       <div class="tally hot"><div class="n" id="c-running">–</div><div class="l">Running</div></div>
       <div class="tally"><div class="n" id="c-pending">–</div><div class="l">Pending</div></div>
@@ -221,6 +222,35 @@
   var listEl = $("list"), detailEl = $("detail");
   $("pageurl").textContent = location.host + location.pathname;
   $("mcpurl").textContent = location.origin + "/mcp";
+  
+  // Bearer token handling
+  var BRIDGE_TOKEN_KEY = "bridge_auth_token";
+  var token = sessionStorage.getItem(BRIDGE_TOKEN_KEY);
+  if (!token) {
+    var promptToken = prompt("Enter your Bridge Bearer Token to access the dispatch board:");
+    if (promptToken) {
+      sessionStorage.setItem(BRIDGE_TOKEN_KEY, promptToken);
+      token = promptToken;
+    } else {
+      document.body.innerHTML = '<div style="padding:40px;color:#f2ead8;font-family:system-ui;background:#14100b;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center"><div><h2>Authentication Required</h2><p>Please refresh the page and enter your Bridge Bearer Token.</p></div></div>';
+      return;
+    }
+  }
+  
+  // Show auth status
+  $("authstatus").textContent = "🔒 " + token.substring(0, 8) + "...";
+  $("authstatus").title = "Click to change token";
+  $("authstatus").style.cursor = "pointer";
+  $("authstatus").onclick = function() {
+    var newToken = prompt("Enter Bridge Bearer Token:", token);
+    if (newToken && newToken.trim()) {
+      sessionStorage.setItem(BRIDGE_TOKEN_KEY, newToken.trim());
+      token = newToken.trim();
+      $("authstatus").textContent = "🔒 " + token.substring(0, 8) + "...";
+      location.reload();
+    }
+  };
+  
   function esc(s){ return String(s == null ? "" : s); }
   function stamp(st){ return '<span class="stamp st-' + esc(st) + '">' + esc(st) + "</span>"; }
   var ORIGIN_STYLE = {
@@ -262,7 +292,17 @@
   var lastStatus = "";
   function auto(){ return $("auto").checked; }
   async function jget(url){
-    var r = await fetch(url, {cache: "no-store"});
+    var headers = {};
+    if (token) {
+      headers["Authorization"] = "Bearer " + token;
+    }
+    var r = await fetch(url, {cache: "no-store", headers: headers});
+    if (r.status === 401) {
+      sessionStorage.removeItem(BRIDGE_TOKEN_KEY);
+      alert("Authentication failed. Token may be invalid or expired.");
+      location.reload();
+      throw new Error("Unauthorized");
+    }
     if (!r.ok) throw new Error(r.status + " " + url);
     return r.json();
   }

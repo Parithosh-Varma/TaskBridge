@@ -1,39 +1,39 @@
-# Claude–OpenCode Bridge
+# TaskBridge
 
-> Let Claude dispatch coding work to headless OpenCode agents — with a durable SQLite queue in between.
+> **Claude plans. OpenCode builds.** Dispatch real coding work from Claude to headless OpenCode agents via a durable SQLite queue.
 
-Claude submits tasks over MCP. An auto-worker picks them up within ~60s, runs them with `opencode run`, and writes structured results back for Claude to read. Works from Claude Desktop (stdio), any MCP client (HTTP), and in reverse — OpenCode can drive Claude too.
+Claude submits tasks over MCP. An auto-worker picks them up in ~60 s, runs `opencode run` in an isolated worktree, and returns a structured summary, git-aware diff, logs, and usage for Claude to read. Works from Claude Desktop (stdio), any MCP client over HTTP, and in reverse — OpenCode can drive Claude too.
 
-![Python 3.12](https://img.shields.io/badge/python-3.12-blue) ![MCP](https://img.shields.io/badge/protocol-MCP-green) ![SQLite](https://img.shields.io/badge/queue-SQLite-lightgrey)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue) ![MCP](https://img.shields.io/badge/protocol-MCP-green) ![SQLite](https://img.shields.io/badge/queue-SQLite-lightgrey) ![Worker](https://img.shields.io/badge/worker-2.0.0-blue) ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 ## Why this exists
 
-Claude is a great planner but can't run code on your machine. OpenCode runs code on your machine but isn't inside Claude's context. This bridge connects them:
+Claude is a powerful planner that can't touch your filesystem. OpenCode runs code locally but lives outside Claude's context. The bridge closes the loop:
 
-- **Claude** stays the interface: it breaks work down and delegates.
-- **OpenCode** does the execution: edits, tests, shell — headlessly.
-- **SQLite** (`tasks.db`) is the durable handoff: survives restarts, supports retries, priorities, dependencies, and two-way questions.
+- **Claude stays the interface** — breaks work down, delegates, and reads results.
+- **OpenCode does the execution** — edits, tests, shell, headlessly and reproducibly.
+- **SQLite is the durable handoff** — survives restarts, supports retries, priorities, dependencies, and two-way questions.
 
 ## Features
 
-- **16 MCP tools for Claude**: `submit_task`, `submit_batch` (up to 20), `get_task` / `get_task_result`, `get_task_logs` (live tail), `wait_for` (no poll loops), `answer_task` (resume waiting tasks), `list_tasks` (status/tag/date), `queue_status` / `worker_heartbeat`, `add_task_note`, `cancel_task` / `clear_finished`, `list_models` / `set_default_model`, `ping`.
-- **Auto-worker** (`worker.py`): launchd polls every 60s, claims oldest-first by priority, streams output to `task_logs/<id>.log`, completes with structured `{summary, files_touched, tests_run, open_questions}` + git-aware diff summary.
-- **Two-way questions**: worker emits a `question` block → task goes `waiting` + macOS banner → Claude answers via `answer_task` → run resumes with the answer in context.
-- **Worktree isolation**: per-task branch + `git worktree`, auto-committed on success, cleaned up unless `worktree_keep`.
-- **Honest permissions**: `readonly` reverts writes after the run (`usage.sandbox_enforced` + `reverted` list); `no-network` / `no-shell` are prompt-level and labeled as such.
-- **Reverse bridge** (`claude_control_mcp.py`): 6 tools for OpenCode to drive Claude — `claude_ask` (sync), `claude_submit` / `claude_poll` / `claude_result` / `claude_cancel` (background), `claude_status`. API backend if `ANTHROPIC_API_KEY` is set, else `claude -p` CLI.
-- **Public-URL mode** (`start_public.sh`): MCP over ngrok fixed domain or Cloudflare quick tunnel with automatic `MCP_ALLOWED_HOSTS` pairing.
-- **Live dispatch board** (`bridge_dashboard.html`, served as `GET /` on the same port/URL): warm dispatch-hall design with tally counts, per-task live log printouts, reverse Claude jobs, engine log tail, and a scrolling wire of the freshest output. Polls `/api/*` — the MCP endpoint at `/mcp` is untouched.
-- **Caller detection**: `submit_task`/`submit_batch` stamp the true caller from the MCP handshake (`clientInfo`), so Claude and ChatGPT dockets get their own origin marks automatically; explicit `origin` overrides. The worker claims tasks from both.
-- **Reliability**: per-attempt timeouts, 15-min stale-`running` reaper (kills orphaned process groups), single-instance flock, heartbeat file with `current_task`, macOS completion banners (`WORKER_NOTIFY=0` to silence).
+- **16 MCP tools for Claude** — `submit_task`, `submit_batch` (up to 20), `get_task` / `get_task_result`, `get_task_logs` (live tail), `wait_for`, `answer_task`, `list_tasks`, `queue_status` / `worker_heartbeat`, `add_task_note`, `cancel_task` / `clear_finished`, `list_models` / `set_default_model`, `ping`. No polling loops, full observability.
+- **Headless auto-worker** (`worker.py`) — launchd polls every 60 s, claims oldest-first by priority, streams output to `task_logs/<id>.log`, returns structured `{summary, files_touched, tests_run, open_questions}` plus a git-aware diff.
+- **Two-way questions** — worker can pause with a `question` block → task goes `waiting` + macOS banner → Claude answers via `answer_task` → run resumes with the answer in context.
+- **Worktree isolation** — per-task branch + `git worktree`, auto-committed on success, cleaned up unless `worktree_keep`.
+- **Honest permissions** — `readonly` reverts writes and reports `reverted` files; `no-network` / `no-shell` are prompt-level and explicitly labeled.
+- **Reverse bridge** (`claude_control_mcp.py`) — 6 tools for OpenCode to drive Claude: `claude_ask` (sync), `claude_submit` / `claude_poll` / `claude_result` / `claude_cancel` (background), `claude_status`. Uses Anthropic API if `ANTHROPIC_API_KEY` is set, else `claude -p`.
+- **Public-URL mode** (`start_public.sh`) — one command to expose MCP via ngrok fixed domain or Cloudflare quick tunnel with automatic `MCP_ALLOWED_HOSTS` pairing.
+- **Live dispatch board** (`bridge_dashboard.html`) — served at `GET /` on the same host. Tally counts, per-task live logs, reverse jobs, engine tail, and a scrolling feed of fresh output. Polls `/api/*`; MCP stays at `/mcp`.
+- **Caller detection** — `submit_task`/`submit_batch` stamp the true caller from the MCP handshake `clientInfo`, so Claude and ChatGPT dockets stay separate. `origin` can be overridden explicitly.
+- **Production reliability** — per-attempt timeouts, 15-min stale-`running` reaper with pid-reuse guard, single-instance flock, heartbeat file, macOS banners (`WORKER_NOTIFY=0` to silence).
 
 ## Quickstart
 
 Prerequisites: Python 3.12, `opencode` CLI on `PATH`, a checkout of this repo.
 
 ```bash
-git clone https://github.com/Parithosh-Varma/claude-opencode-bridge.git
-cd claude-opencode-bridge
+git clone https://github.com/Parithosh-Varma/TaskBridge.git
+cd TaskBridge
 python3.12 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 ```
@@ -54,7 +54,31 @@ Or serve HTTP locally:
 Wire into Claude Desktop — merge `claude_desktop_config.snippet.json` into
 `~/Library/Application Support/Claude/claude_desktop_config.json` under `mcpServers`
 (replace `<REPO_PATH>` with your checkout path), then restart Claude Desktop.
-Verify: ask Claude to list MCP tools — you should see `submit_task`, `get_task`, `list_tasks` under `opencode-bridge`.
+Verify: ask Claude to list MCP tools — you should see `submit_task`, `get_task`, `list_tasks` under `taskbridge`.
+
+## Authentication (HTTP mode)
+
+Install-time bearer token protects your public MCP endpoint:
+
+```bash
+./install.sh
+# Generates .bridge-token and shows your token once — save it!
+```
+
+Token is loaded from `.bridge-token` file or `BRIDGE_AUTH_TOKEN` env var.
+When using `start_public.sh`, the token is automatically picked up.
+
+**Public URL access requires**:
+```
+Authorization: Bearer <your-token>
+```
+
+- `/health` is open (monitoring)
+- `/` dashboard prompts for token (stored in sessionStorage)
+- `/api/*` and `/mcp` require Bearer token
+- stdio transport (Claude Desktop) is local-only, no token needed
+
+To rotate token: delete `.bridge-token` and re-run `./install.sh`
 
 Run one worker pass manually:
 
@@ -128,10 +152,11 @@ Key components:
 | `OPENCODE_BIN` | worker | `opencode` binary (default: `opencode` on `PATH`) |
 | `WORKER_NOTIFY` | worker | `1` (default) macOS banners, `0` to silence |
 | `MCP_ALLOWED_HOSTS` | bridge (HTTP) | Comma-separated tunnel hosts (required behind ngrok/cloudflared, else 421) |
+| `BRIDGE_AUTH_TOKEN` | bridge (HTTP) | Bearer token for MCP/API access (defaults to `.bridge-token` file) |
 | `ANTHROPIC_API_KEY` | reverse bridge | Direct API backend; else `claude -p` CLI |
 | `CLAUDE_API_MODEL` / `CLAUDE_MCP_HOME` | reverse bridge | Model override / shadow HOME for CLI backend |
 
-`start_public.sh`: uses `.ngrok-domain` if present (fixed domain), else Cloudflare quick tunnel. It re-pairs `MCP_ALLOWED_HOSTS` automatically — rerun it whenever the URL changes.
+`start_public.sh`: uses `.ngrok-domain` if present (fixed domain), else Cloudflare quick tunnel. It re-pairs `MCP_ALLOWED_HOSTS` automatically — rerun it whenever the URL changes. If `.bridge-token` exists, `BRIDGE_AUTH_TOKEN` is loaded automatically.
 
 ## Project structure
 
@@ -174,3 +199,7 @@ Runtime state (never committed): `tasks.db`, `task_logs/`, `claude_jobs/`, `work
 - MCP `submit_task` / `get_task` / `list_tasks` via `call_tool`: OK
 - CLI `pending` / `show` / `claim` / `complete`: OK
 - `submit_task` → auto-picked-up in ~60s → `get_task_result` with zero manual steps: OK
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE). Fork it, self-host it, build on it.

@@ -1,4 +1,4 @@
-"""Shared SQLite task store for Claude <-> OpenCode bridge."""
+"""Shared SQLite task store for TaskBridge (Claude <-> OpenCode)."""
 from __future__ import annotations
 import json
 import os

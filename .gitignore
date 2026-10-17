@@ -13,6 +13,7 @@ tasks.db-*
 heartbeat.json
 .worker.lock
 .ngrok-domain
+.bridge-token
 task_logs/
 claude_jobs/
 worktrees/
@@ -28,4 +29,4 @@ getinsomnia-clone*/
 .DS_Store
 
 # LaunchAgent (local absolute paths)
-com.claude-opencode-bridge.worker.plist
+com.taskbridge.worker.plist

@@ -2,7 +2,7 @@
 """Auto-worker: poll the Claude task queue and execute pending tasks headlessly.
 
 Designed for launchd (one pass per invocation, exits when queue is empty):
-  ./worker.py   (every 60s via com.claude-opencode-bridge.worker)
+  ./worker.py   (every 60s via com.taskbridge.worker)
 
 Per pass, oldest-first within priority (priority DESC, created_at ASC):
   1. claim  -> running   (skips: non-claude mail, unmet dependencies)
@@ -533,8 +533,8 @@ def teardown_worktree(task: dict, cwd: str, success: bool) -> str:
         if st.returncode == 0 and st.stdout.strip():
             subprocess.run(["git", "-C", cwd, "add", "-A"], capture_output=True, timeout=60)
             cm = subprocess.run(
-                ["git", "-C", cwd, "-c", "user.email=opencode-bridge@local",
-                 "-c", "user.name=opencode-bridge",
+                ["git", "-C", cwd, "-c", "user.email=taskbridge@local",
+                 "-c", "user.name=taskbridge",
                  "commit", "-qm", f"task {task['id']}: {task['title']}"],
                 capture_output=True, text=True, timeout=60)
             sha = subprocess.run(["git", "-C", cwd, "rev-parse", "--short", "HEAD"],

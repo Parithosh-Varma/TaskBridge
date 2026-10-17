@@ -15,6 +15,8 @@ OpenCode (this agent) flow — via shell, not MCP:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import time
@@ -23,7 +25,8 @@ from pathlib import Path
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 import task_store
 import worker as worker_mod
@@ -31,6 +34,77 @@ import worker as worker_mod
 HERE = Path(__file__).parent
 DASHBOARD_PATH = HERE / "bridge_dashboard.html"
 CLAUDE_JOBS_DIR = HERE / "claude_jobs"
+TOKEN_FILE = HERE / ".bridge-token"
+
+
+def _load_auth_token() -> str | None:
+    """Load bearer token from env var or .bridge-token file."""
+    token = os.environ.get("BRIDGE_AUTH_TOKEN", "").strip()
+    if not token:
+        try:
+            if TOKEN_FILE.exists():
+                token = TOKEN_FILE.read_text().strip()
+        except (OSError, ValueError):
+            pass
+    return token or None
+
+
+def _auth_middleware(app: ASGIApp) -> ASGIApp:
+    """Simple bearer auth middleware for HTTP transport.
+    
+    Requires Authorization: Bearer <token> for all routes except:
+    - /health (open for monitoring)
+    - / (dashboard page, serves HTML)
+    - Static assets served via dashboard
+    """
+    token = _load_auth_token()
+    
+    async def middleware(scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+        
+        path = scope.get("path", "")
+        
+        # Open routes (no auth required)
+        if path == "/health" or path == "/":
+            await app(scope, receive, send)
+            return
+        
+        # If no token configured, allow all (dev mode)
+        if not token:
+            await app(scope, receive, send)
+            return
+        
+        # Check Authorization header
+        auth_header = None
+        for k, v in scope.get("headers", []):
+            if k == b"authorization":
+                auth_header = v.decode()
+                break
+        
+        if not auth_header or not auth_header.startswith("Bearer "):
+            response = Response(
+                "Unauthorized: Bearer token required",
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer realm=\"bridge\""},
+            )
+            await response(scope, receive, send)
+            return
+        
+        provided_token = auth_header[7:].strip()
+        if not hmac.compare_digest(provided_token, token):
+            response = Response(
+                "Unauthorized: Invalid bearer token",
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer realm=\"bridge\""},
+            )
+            await response(scope, receive, send)
+            return
+        
+        await app(scope, receive, send)
+    
+    return middleware
 
 
 def _transport_security() -> TransportSecuritySettings | None:
@@ -46,7 +120,7 @@ def _transport_security() -> TransportSecuritySettings | None:
 
 
 mcp = FastMCP(
-    "opencode-bridge",
+    "taskbridge",
     host="127.0.0.1",
     port=8000,
     transport_security=_transport_security(),
@@ -630,6 +704,23 @@ if __name__ == "__main__":
     args = ap.parse_args()
     mcp.settings.host = args.host
     mcp.settings.port = args.port
+    
+    # Wrap HTTP app with auth middleware
+    if args.transport != "stdio":
+        original_streamable_app = mcp.streamable_http_app
+        original_sse_app = mcp.sse_app
+        
+        def wrapped_streamable_app():
+            app = original_streamable_app()
+            return _auth_middleware(app)
+        
+        def wrapped_sse_app(mount_path=None):
+            app = original_sse_app(mount_path)
+            return _auth_middleware(app)
+        
+        mcp.streamable_http_app = wrapped_streamable_app
+        mcp.sse_app = wrapped_sse_app
+    
     if args.transport == "stdio":
         mcp.run()
     else:
