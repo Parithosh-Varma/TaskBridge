@@ -1,0 +1,198 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #100c08;
+  --panel: #1a140e;
+  --panel-2: #221a12;
+  --line: #33291d;
+  --paper: #efe4cc;
+  --faint: #9c8c72;
+  --ember: #e2603a;
+  --signal: #f2a007;
+  --seal: #8fc39a;
+  --wait: #b9a3e3;
+  --ramp: linear-gradient(90deg, var(--ember), var(--signal) 50%, var(--seal));
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-paper: var(--paper);
+  --color-faint: var(--faint);
+  --color-ember: var(--ember);
+  --color-signal: var(--signal);
+  --color-seal: var(--seal);
+  --color-wait: var(--wait);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html {
+  background: var(--bg);
+  scroll-behavior: smooth;
+  scroll-padding-top: 4.5rem;
+}
+
+body {
+  background: var(--bg);
+  color: var(--paper);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--signal) 35%, transparent);
+  color: var(--paper);
+}
+
+:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Teletype grain: inline feTurbulence, fixed, never interactive. */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 0.93  0 0 0 0 0.82  0 0 0 1 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  background-size: 220px 220px;
+}
+
+@layer components {
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--faint);
+  }
+
+  .ramp-text {
+    background: var(--ramp);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .ramp-rule {
+    height: 1px;
+    background: var(--ramp);
+    opacity: 0.7;
+  }
+
+  .term-card {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 6px;
+  }
+
+  .chip {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1;
+    padding: 5px 8px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    color: var(--paper);
+    background: var(--bg);
+    white-space: nowrap;
+  }
+
+  /* Wide-risk glyphs (⛁ ▣ ⟲ …) can fall back to another font: pin them to one cell. */
+  .cell {
+    display: inline-block;
+    width: 1ch;
+    text-align: center;
+    overflow: visible;
+  }
+
+  .glow-signal {
+    text-shadow: 0 0 10px color-mix(in srgb, var(--signal) 55%, transparent);
+  }
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes lamp {
+  0%,
+  100% {
+    opacity: 1;
+    text-shadow: 0 0 8px color-mix(in srgb, var(--signal) 70%, transparent);
+  }
+  50% {
+    opacity: 0.55;
+    text-shadow: none;
+  }
+}
+
+@keyframes caret {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.animate-pulse-soft {
+  animation: pulse-soft 2.6s ease-in-out infinite;
+}
+
+.animate-lamp {
+  animation: lamp 2.2s ease-in-out infinite;
+}
+
+.animate-caret {
+  animation: caret 1.05s steps(1) infinite;
+}
+
+/* Hero entrance. Under reduced motion the global rule collapses it to the final frame. */
+@keyframes hero-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.hero-in {
+  animation: hero-in 0.6s var(--ease-out) both;
+}
