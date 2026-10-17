@@ -51,28 +51,6 @@ p.lede{font-size:clamp(17px,2vw,20px);color:#3d3d44;max-width:62ch}
 .hero-meta{display:flex;gap:18px;margin-top:22px;font-family:var(--mono);font-size:12.5px;color:var(--muted);flex-wrap:wrap}
 .hero-meta b{color:var(--ink)}
 
-/* relay lane (signature) */
-.lane{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px;position:relative;overflow:hidden}
-.lane-head{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--muted);margin-bottom:18px}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--alive);box-shadow:0 0 0 4px color-mix(in srgb,var(--alive) 15%,transparent);animation:pulse 2s infinite}
-@keyframes pulse{50%{box-shadow:0 0 0 7px color-mix(in srgb,var(--alive) 7%,transparent)}}
-.lane-track{position:relative;height:172px;border:1px dashed var(--line);border-radius:10px;background:
-  linear-gradient(to right,var(--line-soft) 0 0) center/100% 1px no-repeat}
-.node{position:absolute;top:50%;transform:translate(-50%,-50%);background:var(--paper);border:1px solid var(--line);
-  border-radius:10px;padding:8px 12px;font-family:var(--mono);font-size:12px;white-space:nowrap}
-.node small{display:block;color:var(--muted);font-size:10.5px}
-.n1{left:13%}.n2{left:50%}.n3{left:87%}
-.chip{position:absolute;top:50%;left:0;transform:translate(-100%,-130%);font-family:var(--mono);font-size:11.5px;
-  background:var(--ink);color:var(--paper);border-radius:999px;padding:5px 12px;white-space:nowrap;
-  animation:relay 6s linear infinite}
-.chip.c2{animation-delay:2s}.chip.c3{animation-delay:4s}
-.chip i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--pending);margin-right:7px}
-.chip.c2 i{background:var(--run)}.chip.c3 i{background:#35d083}
-@keyframes relay{0%{left:4%;opacity:0}8%{opacity:1}88%{opacity:1}96%{left:96%;opacity:0}100%{left:96%;opacity:0}}
-.lane-log{margin-top:16px;font-family:var(--mono);font-size:12px;color:var(--muted);display:grid;gap:6px}
-.lane-log b{color:var(--alive);font-weight:600}
-.lane-log .w{color:var(--pending)}
-
 /* sections */
 section.block{padding:64px 0;border-top:1px solid var(--line)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
