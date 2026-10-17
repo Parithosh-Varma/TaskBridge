@@ -1,0 +1,10 @@
+import { chromium } from 'playwright-core'
+const b = await chromium.launch({ channel: 'chrome', headless: true })
+const p = await b.newPage({ viewport: { width: 1440, height: 900 } })
+await p.goto('https://claude-opencode-bridge.pages.dev/faq', { waitUntil: 'networkidle' })
+await p.evaluate(() => document.querySelectorAll('details')[1]?.setAttribute('open', ''))
+await p.evaluate(() => document.querySelectorAll('details')[2]?.setAttribute('open', ''))
+await p.waitForTimeout(800)
+await p.screenshot({ path: '/tmp/tb-faq-live.png' })
+await b.close()
+console.log('done')
