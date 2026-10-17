@@ -30,6 +30,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 import task_store
 import worker as worker_mod
+import oauth_service
 
 HERE = Path(__file__).parent
 DASHBOARD_PATH = HERE / "bridge_dashboard.html"
@@ -50,60 +51,74 @@ def _load_auth_token() -> str | None:
 
 
 def _auth_middleware(app: ASGIApp) -> ASGIApp:
-    """Simple bearer auth middleware for HTTP transport.
-    
-    Requires Authorization: Bearer <token> for all routes except:
+    """Bearer auth middleware for HTTP transport.
+
+    Accepts either the static bridge token or a locally-issued OAuth JWT
+    (oauth_service.verify_bearer). Requires a token for all routes except:
     - /health (open for monitoring)
     - / (dashboard page, serves HTML)
-    - Static assets served via dashboard
+    - /.well-known/* (RFC 9728 / RFC 8414 discovery documents)
+    - /register, /authorize, /token (MCP authorization endpoints; the human
+      barrier lives on the /authorize consent page)
     """
     token = _load_auth_token()
-    
+
+    open_paths = {"/", "/health", "/register", "/authorize", "/token"}
+
+    def _origin(scope: Scope) -> str:
+        headers = {k: v for k, v in scope.get("headers", [])}
+        host = (headers.get(b"host") or b"").decode("latin-1").strip()
+        proto = (headers.get(b"x-forwarded-proto") or b"").decode("latin-1").split(",")[0].strip()
+        scheme = proto or scope.get("scheme", "http")
+        return f"{scheme}://{host}".rstrip("/")
+
     async def middleware(scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
             await app(scope, receive, send)
             return
-        
+
         path = scope.get("path", "")
-        
+
         # Open routes (no auth required)
-        if path == "/health" or path == "/":
+        if path in open_paths or path.startswith("/.well-known/"):
             await app(scope, receive, send)
             return
-        
+
         # If no token configured, allow all (dev mode)
         if not token:
             await app(scope, receive, send)
             return
-        
+
         # Check Authorization header
         auth_header = None
         for k, v in scope.get("headers", []):
             if k == b"authorization":
                 auth_header = v.decode()
                 break
-        
-        if not auth_header or not auth_header.startswith("Bearer "):
-            response = Response(
+
+        challenge = (
+            "Bearer realm=\"mcp\", resource_metadata=\""
+            + _origin(scope) + "/.well-known/oauth-protected-resource/mcp\""
+        )
+
+        def deny() -> Response:
+            return Response(
                 "Unauthorized: Bearer token required",
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer realm=\"bridge\""},
+                headers={"WWW-Authenticate": challenge},
             )
-            await response(scope, receive, send)
+
+        if not auth_header or not auth_header.startswith("Bearer "):
+            await deny()(scope, receive, send)
             return
-        
+
         provided_token = auth_header[7:].strip()
-        if not hmac.compare_digest(provided_token, token):
-            response = Response(
-                "Unauthorized: Invalid bearer token",
-                status_code=401,
-                headers={"WWW-Authenticate": "Bearer realm=\"bridge\""},
-            )
-            await response(scope, receive, send)
+        if not oauth_service.verify_bearer(provided_token, _origin(scope)):
+            await deny()(scope, receive, send)
             return
-        
+
         await app(scope, receive, send)
-    
+
     return middleware
 
 
@@ -125,6 +140,10 @@ mcp = FastMCP(
     port=8000,
     transport_security=_transport_security(),
 )
+
+# Attach MCP authorization endpoints (PRM discovery, AS metadata, DCR,
+# consent page, token endpoint) — see oauth_service.py.
+oauth_service.register_routes(mcp)
 
 
 @mcp.tool()

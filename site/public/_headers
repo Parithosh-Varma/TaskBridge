@@ -1,0 +1,8 @@
+# Cloudflare Pages header rules — hardened for a static SPA.
+/*
+  # Same-origin only; Google Fonts allowlisted for the single typeface.
+  # style-src keeps 'unsafe-inline' for React-rendered style attributes (art panel font sizing).
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()

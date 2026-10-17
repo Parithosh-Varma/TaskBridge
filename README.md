@@ -22,14 +22,26 @@ Claude is a powerful planner that can't touch your filesystem. OpenCode runs cod
 - **Worktree isolation** — per-task branch + `git worktree`, auto-committed on success, cleaned up unless `worktree_keep`.
 - **Honest permissions** — `readonly` reverts writes and reports `reverted` files; `no-network` / `no-shell` are prompt-level and explicitly labeled.
 - **Reverse bridge** (`claude_control_mcp.py`) — 6 tools for OpenCode to drive Claude: `claude_ask` (sync), `claude_submit` / `claude_poll` / `claude_result` / `claude_cancel` (background), `claude_status`. Uses Anthropic API if `ANTHROPIC_API_KEY` is set, else `claude -p`.
-- **Public-URL mode** (`start_public.sh`) — one command to expose MCP via ngrok fixed domain or Cloudflare quick tunnel with automatic `MCP_ALLOWED_HOSTS` pairing.
+- **Public-URL mode** (`install.sh` / `start_public.sh`) — one command to expose MCP via ngrok (the installer prompts for your Authtoken) or Cloudflare quick tunnel with automatic `MCP_ALLOWED_HOSTS` pairing.
 - **Live dispatch board** (`bridge_dashboard.html`) — served at `GET /` on the same host. Tally counts, per-task live logs, reverse jobs, engine tail, and a scrolling feed of fresh output. Polls `/api/*`; MCP stays at `/mcp`.
 - **Caller detection** — `submit_task`/`submit_batch` stamp the true caller from the MCP handshake `clientInfo`, so Claude and ChatGPT dockets stay separate. `origin` can be overridden explicitly.
 - **Production reliability** — per-attempt timeouts, 15-min stale-`running` reaper with pid-reuse guard, single-instance flock, heartbeat file, macOS banners (`WORKER_NOTIFY=0` to silence).
 
 ## Quickstart
 
-Prerequisites: Python 3.12, `opencode` CLI on `PATH`, a checkout of this repo.
+Prerequisites: Python 3.12, `opencode` CLI on `PATH`, and (for public access) a free ngrok account.
+
+**One command — install, tunnel, serve, print your connector box:**
+
+```bash
+git clone https://github.com/Parithosh-Varma/TaskBridge.git
+cd TaskBridge
+./install.sh
+```
+
+`install.sh` prompts for your ngrok Authtoken (blank = already configured), installs dependencies into `.venv`, generates or reuses the bearer token in `.bridge-token`, opens the ngrok tunnel (fixed domain from `.ngrok-domain` when present), pairs `MCP_ALLOWED_HOSTS`, prints the public URL + token box, then serves MCP in the foreground. Ctrl+C stops the server; the tunnel stays up for the next run. Rotate the token with `./install.sh --rotate`.
+
+**Manual setup** (stdio / local dev):
 
 ```bash
 git clone https://github.com/Parithosh-Varma/TaskBridge.git
@@ -58,15 +70,15 @@ Verify: ask Claude to list MCP tools — you should see `submit_task`, `get_task
 
 ## Authentication (HTTP mode)
 
-Install-time bearer token protects your public MCP endpoint:
+`install.sh` generates the bearer token and serves the public endpoint:
 
 ```bash
-./install.sh
-# Generates .bridge-token and shows your token once — save it!
+./install.sh            # reuse or generate .bridge-token, tunnel + serve
+./install.sh --rotate   # regenerate the bearer token first
 ```
 
 Token is loaded from `.bridge-token` file or `BRIDGE_AUTH_TOKEN` env var.
-When using `start_public.sh`, the token is automatically picked up.
+`install.sh` and `start_public.sh` (the background / Cloudflare-tunnel variant) both pick it up automatically.
 
 **Public URL access requires**:
 ```
@@ -78,7 +90,7 @@ Authorization: Bearer <your-token>
 - `/api/*` and `/mcp` require Bearer token
 - stdio transport (Claude Desktop) is local-only, no token needed
 
-To rotate token: delete `.bridge-token` and re-run `./install.sh`
+To rotate token: `./install.sh --rotate`
 
 Run one worker pass manually:
 
@@ -140,7 +152,8 @@ Key components:
 | `tasks_cli.py` | CLI for manual runs: `pending list show claim complete fail logs heartbeat answer` |
 | `worker.py` | Headless executor: `opencode run --auto`, timeouts, reaper, worktrees, banners |
 | `claude_control_mcp.py` | Reverse MCP server (OpenCode → Claude) |
-| `start_public.sh` | One-command public stack: tunnel + allowlisted MCP server |
+| `install.sh` | One command: deps + bearer token + ngrok tunnel + allowlist + serve |
+| `start_public.sh` | Background variant: tunnel + allowlisted MCP server (ngrok fixed domain or Cloudflare) |
 | `claude_desktop_config.snippet.json` | Claude Desktop wiring template (`<REPO_PATH>` placeholder) |
 
 ## Configuration
@@ -153,10 +166,14 @@ Key components:
 | `WORKER_NOTIFY` | worker | `1` (default) macOS banners, `0` to silence |
 | `MCP_ALLOWED_HOSTS` | bridge (HTTP) | Comma-separated tunnel hosts (required behind ngrok/cloudflared, else 421) |
 | `BRIDGE_AUTH_TOKEN` | bridge (HTTP) | Bearer token for MCP/API access (defaults to `.bridge-token` file) |
+| `TASKBRIDGE_CONSENT_SECRET` | OAuth consent | Secret for the /approve "this was me" page (defaults to the bridge token) |
+| `TASKBRIDGE_TOKEN_TTL_SEC` | OAuth | Access-token lifetime (default 86400 = 24h) |
+| `TASKBRIDGE_REFRESH_TTL_SEC` | OAuth | Refresh-token lifetime (default 2592000 = 30d) |
+| `MCP_PUBLIC_URL` | bridge (HTTP) | Force the public origin in OAuth documents when behind unusual proxies |
 | `ANTHROPIC_API_KEY` | reverse bridge | Direct API backend; else `claude -p` CLI |
 | `CLAUDE_API_MODEL` / `CLAUDE_MCP_HOME` | reverse bridge | Model override / shadow HOME for CLI backend |
 
-`start_public.sh`: uses `.ngrok-domain` if present (fixed domain), else Cloudflare quick tunnel. It re-pairs `MCP_ALLOWED_HOSTS` automatically — rerun it whenever the URL changes. If `.bridge-token` exists, `BRIDGE_AUTH_TOKEN` is loaded automatically.
+`start_public.sh`: uses `.ngrok-domain` if present (fixed domain), else Cloudflare quick tunnel. It re-pairs `MCP_ALLOWED_HOSTS` automatically — rerun it whenever the URL changes. If `.bridge-token` exists, `BRIDGE_AUTH_TOKEN` is loaded automatically. `install.sh` is the interactive equivalent — it prompts for the ngrok Authtoken and serves MCP in the foreground.
 
 ## Project structure
 
@@ -167,7 +184,8 @@ Key components:
 ├── tasks_cli.py                    # Manual worker CLI
 ├── worker.py                       # Auto-worker (launchd, 60s)
 ├── claude_control_mcp.py           # Reverse bridge (OpenCode → Claude)
-├── start_public.sh                 # Public tunnel + server launcher
+├── install.sh                      # One-command installer: deps, token, tunnel, serve
+├── start_public.sh                 # Public tunnel + server launcher (background)
 ├── claude_desktop_config.snippet.json
 ├── claude-clean.settings.json
 ├── requirements.txt                # mcp>=1.0,<2
@@ -178,8 +196,8 @@ Runtime state (never committed): `tasks.db`, `task_logs/`, `claude_jobs/`, `work
 
 ## Troubleshooting / FAQ
 
-- **421 behind tunnel**: `MCP_ALLOWED_HOSTS` must exactly match the tunnel host. Run `./start_public.sh` — it sets this automatically.
-- **Tunnel URL changed (Cloudflare)**: quick-tunnel hostnames rotate every restart. Rerun `./start_public.sh` or switch to an ngrok fixed domain via `.ngrok-domain`.
+- **421 behind tunnel**: `MCP_ALLOWED_HOSTS` must exactly match the tunnel host. Run `./install.sh` or `./start_public.sh` — they set this automatically.
+- **Tunnel URL changed (Cloudflare)**: quick-tunnel hostnames rotate every restart. Rerun `./install.sh` (or `./start_public.sh`), or reserve an ngrok fixed domain via `.ngrok-domain`.
 - **Worker looks stuck**: check `./.venv/bin/python tasks_cli.py heartbeat` and `task_logs/<id>.log`. Stale `running` tasks are reaped after 15 min (per-task `timeout_sec` + slack honored).
 - **Double-run after kill**: every attempt spawns `opencode run --standalone --title br-<id>-a<n>` (per-attempt argv marker, ps-visible). The reaper kills the orphaned CLI child **plus its ppid tree** (loop-until-empty, hard-capped so a matching bug can't mass-kill); a per-pass sweep catches tagged strays of non-running tasks. Reaper deadline is per-task (`max(900s, timeout_sec + 120s)`). macOS gives no session/env signal (`ps sess=` is 0 everywhere, `ps -E` shows no env), so ppid walk + argv marker are the whole toolkit — reparented-to-1/setsid grandchildren are the known residual. NOTE: never pass `--session` to the CLI: it makes free-tier models refuse to run.
 - **No banners**: macOS only. Set `WORKER_NOTIFY=0` to silence intentionally; full output is always in `tasks.db` + `worker.log`.

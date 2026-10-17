@@ -18,6 +18,9 @@ task_logs/
 claude_jobs/
 worktrees/
 worker_config.json
+.oauth-key
+oauth.db
+oauth.db-*
 
 # wrangler / deploy cache
 .wrangler/
@@ -30,3 +33,8 @@ getinsomnia-clone*/
 
 # LaunchAgent (local absolute paths)
 com.taskbridge.worker.plist
+
+# react site build + tooling
+site/node_modules/
+site/dist/
+site/.vite/

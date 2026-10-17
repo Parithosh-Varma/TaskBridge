@@ -1,159 +1,27 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TaskBridge — Claude dispatches, OpenCode executes</title>
-<meta name="description" content="Let Claude dispatch coding work to headless OpenCode agents over MCP — a durable SQLite queue, isolated git worktrees, and structured results with diffs.">
-<meta name="theme-color" content="#F7F7F3">
-<meta property="og:title" content="TaskBridge — Claude dispatches, OpenCode executes">
-<meta property="og:description" content="Dispatch coding tasks from Claude to headless OpenCode agents over MCP. Durable SQLite queue, isolated worktrees, structured results.">
-<meta property="og:type" content="website">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%2316161A'/><text x='16' y='22' font-family='monospace' font-size='16' fill='%23F7F7F3' text-anchor='middle'>⇄</text></svg>">
-<link rel="stylesheet" href="styles.css">
-<link rel="stylesheet" href="landing.css">
-<noscript><style>.rv{opacity:1;transform:none}</style></noscript>
-</head>
-<body>
-<nav class="nav"><div class="wrap nav-in">
-  <a class="brand" href="index.html"><span class="brand-mark">⇄</span>TaskBridge</a>
-  <div class="nav-links" id="navLinks">
-    <a href="index.html" class="active">Overview</a>
-    <a href="quickstart.html">Quickstart</a>
-    <a href="architecture.html">Architecture</a>
-    <a href="faq.html">FAQ</a>
-  </div>
-  <a class="btn btn-solid btn-sm nav-cta" href="https://github.com/Parithosh-Varma/TaskBridge">GitHub →</a>
-  <button class="burger" id="burger" aria-label="Menu">☰</button>
-</div></nav>
-
-<header class="hero l-hero"><div class="wrap">
-  <p class="eyebrow">Model Context Protocol · SQLite queue · Headless agents</p>
-  <h1>Claude dispatches.<br>OpenCode executes.</h1>
-  <div class="hero-grid">
-    <div>
-      <p class="lede">Claude submits coding tasks over MCP. An auto-worker picks them up in about a minute, runs them with <span class="mono">opencode&nbsp;run</span> in an isolated git worktree, and writes structured results back — summary, files touched, tests run, and a git-aware diff.</p>
-      <div class="hero-cta">
-        <a class="btn btn-solid" href="quickstart.html">Get started in 5 min</a>
-        <a class="btn btn-ghost" href="https://github.com/Parithosh-Varma/TaskBridge">View source</a>
-      </div>
-      <div class="hero-meta"><span><b>16</b> MCP tools</span><span><b>~60s</b> pickup</span><span><b>SQLite</b> durable queue</span><span><b>2-way</b> questions</span></div>
-    </div>
-    <div class="board" role="img" aria-label="Relay diagram: Claude submits task t-3f2a over MCP. The task queues in a SQLite database. A headless worker claims it, runs opencode in an isolated git worktree, and a structured result plus diff returns to Claude.">
-      <div aria-hidden="true">
-        <div class="board-head">
-          <span class="board-live"><span class="dot"></span>live relay · t-3f2a</span>
-          <span>tasks.db · single writer</span>
-        </div>
-        <div class="board-track">
-          <div class="bus"></div>
-          <div class="station"><b>Claude</b><small>submit_task</small></div>
-          <div class="station"><b>tasks.db</b><small>SQLite queue</small></div>
-          <div class="station"><b>worker</b><small>opencode run</small></div>
-          <div class="packet main st-pending">t-3f2a · pending</div>
-          <div class="packet ret">result + diff → Claude</div>
-        </div>
-        <div class="board-log"><div class="ln">▸ submit_task → t-3f2a · priority 5</div></div>
-      </div>
-    </div>
-  </div>
-</div></header>
-
-<div class="wrap">
-<section class="block">
-  <p class="eyebrow">Why it exists</p>
-  <h2>Planners plan.<br>Runners run.</h2>
-  <p class="lede">Claude is a great planner that can't touch your machine. OpenCode runs code locally but lives outside Claude's context. The bridge connects them with a queue that survives restarts — retries, priorities, dependencies, and questions in both directions included.</p>
-  <div class="grid3" style="margin-top:28px">
-    <div class="card rv"><span class="idx">01</span><h3>Delegate, don't babysit</h3><p>One <span class="mono">submit_task</span> call fans out to a headless agent — <span class="mono">submit_batch</span> takes up to 20. Poll once with <span class="mono">wait_for</span> instead of looping.</p></div>
-    <div class="card rv"><span class="idx">02</span><h3>Answers, not just logs</h3><p>Every completion carries a structured summary, files touched, tests run, and open questions — plus a git-aware diff.</p></div>
-    <div class="card rv"><span class="idx">03</span><h3>Stuck? It asks back</h3><p>The worker can pause a task with a question. You answer via <span class="mono">answer_task</span>, and the run resumes with your answer in context.</p></div>
-  </div>
-</section>
-
-<section class="block">
-  <p class="eyebrow">How it runs</p>
-  <h2>Dispatch. Pickup. Collect.</h2>
-  <p class="lede">No polling loop, no server to babysit. The handoff is a SQLite file, and everything else is one command away.</p>
-  <div class="moves">
-    <div class="move rv"><span class="m-idx">01 · DISPATCH</span><h3>Ask once.</h3><p>A single <span class="mono">submit_task</span> lands in the queue — from Claude Desktop over stdio or any MCP client over HTTP. Priorities, dependencies and retries ride along.</p><code class="m-cmd">submit_task(title, working_dir, instructions)</code></div>
-    <div class="move rv"><span class="m-idx">02 · PICKUP</span><h3>The worker claims it.</h3><p>Within about a minute a headless worker spins a per-task git worktree, runs <span class="mono">opencode run</span>, and streams output to <span class="mono">task_logs/&lt;id&gt;.log</span>.</p><code class="m-cmd">opencode run · worktree br/t-3f2a</code></div>
-    <div class="move rv"><span class="m-idx">03 · COLLECT</span><h3>Read the result.</h3><p><span class="mono">wait_for</span> blocks until it finishes; <span class="mono">get_task_result</span> returns the structured summary and the diff. No babysitting.</p><code class="m-cmd">wait_for → get_task_result</code></div>
-  </div>
-  <p class="boardnote">Prefer to watch? A <b>live dispatch board</b> — tally counts, per-task logs, reverse jobs — is served at <span class="mono">GET /</span> on the same host.</p>
-</section>
-
-<section class="block">
-  <p class="eyebrow">Under the hood</p>
-  <h2>Sixteen tools, one queue.</h2>
-  <div class="strip">
-    <span class="tag">submit_task</span><span class="tag">submit_batch ×20</span><span class="tag">wait_for</span><span class="tag">get_task_result</span><span class="tag">get_task_logs</span><span class="tag">answer_task</span><span class="tag">list_tasks</span><span class="tag">queue_status</span><span class="tag">worker_heartbeat</span><span class="tag">add_task_note</span><span class="tag">cancel_task</span><span class="tag">clear_finished</span><span class="tag">list_models</span><span class="tag">set_default_model</span><span class="tag">ping</span><span class="tag">+ reverse: claude_ask ×6</span>
-  </div>
-  <div class="grid2" style="margin-top:24px">
-    <div class="card rv"><h3>Per-task isolation</h3><p>Each task can run on its own branch in a <span class="mono">git worktree</span>, auto-committed on success and cleaned up after.</p></div>
-    <div class="card rv"><h3>Honest permissions</h3><p><span class="mono">readonly</span> reverts writes and reports what was reverted. Network/shell limits are prompt-level and labeled as such — never oversold.</p></div>
-  </div>
-</section>
-
-<section class="block">
-  <p class="eyebrow">Taste</p>
-  <h2>Three calls. Done.</h2>
-  <div class="code rv" style="margin-top:24px">
-    <div class="code-bar"><span>claude → bridge</span><button data-copy="ex1">copy</button></div>
-<pre id="ex1"><span class="c"># 1. dispatch</span>
-<span class="f">submit_task</span>(title=<span class="s">"Add retry tests"</span>, working_dir=<span class="s">"/path/to/repo"</span>,
-  instructions=<span class="s">"Cover task_store retries. pytest must pass."</span>)  →  id: t-3f2a
-
-<span class="c"># 2. wait (no poll loop)</span>
-<span class="f">wait_for</span>(task_ids=[<span class="s">"t-3f2a"</span>], timeout_sec=<span class="k">120</span>)
-
-<span class="c"># 3. read the structured result</span>
-<span class="f">get_task_result</span>(task_id=<span class="s">"t-3f2a"</span>)  →  { summary, files_touched, tests_run, diff }</pre>
-  </div>
-  <div class="hero-cta">
-    <a class="btn btn-solid" href="quickstart.html">Read the quickstart</a>
-    <a class="btn btn-ghost" href="architecture.html">See architecture</a>
-  </div>
-</section>
-
-<section class="block">
-  <p class="eyebrow">Trust</p>
-  <h2>Enforced, labeled,<br>or not claimed at all.</h2>
-  <p class="lede">If a limit is real, it's mechanically enforced. If it's prompt-level, it's labeled as exactly that. And if a number doesn't exist, it isn't printed.</p>
-  <div style="margin-top:24px;overflow-x:auto"><table class="spec rv">
-    <tr><th>What</th><th>Status</th><th>Detail</th></tr>
-    <tr><td>readonly permission</td><td><span class="pill enf">enforced</span></td><td>Writes are reverted after the run, and every reverted file is reported back.</td></tr>
-    <tr><td>git worktree isolation</td><td><span class="pill enf">enforced</span></td><td>Per-task branch, auto-committed on success, cleaned up unless you ask to keep it.</td></tr>
-    <tr><td>durable queue</td><td><span class="pill enf">enforced</span></td><td>SQLite survives restarts; tasks stuck in <span class="mono">running</span> are reaped and requeued after 15 minutes.</td></tr>
-    <tr><td>auth on public URLs</td><td><span class="pill enf">enforced</span></td><td>Bearer token on <span class="mono">/mcp</span> and <span class="mono">/api</span>; only <span class="mono">/health</span> stays open.</td></tr>
-    <tr><td>no-network · no-shell</td><td><span class="pill lab">labeled</span></td><td>Prompt-level restrictions, documented as such — not an OS sandbox.</td></tr>
-    <tr><td>token counts</td><td><span class="pill nr">not reported</span></td><td>The opencode CLI doesn't expose them. Usage reports model, latency, attempts, sandbox — never faked numbers.</td></tr>
-  </table></div>
-</section>
-
-<section class="block">
-  <p class="eyebrow">Start</p>
-  <h2>Put Claude on dispatch.</h2>
-  <p class="lede">Clone it, wire it into Claude Desktop, and send your first task in about five minutes.</p>
-  <div class="cmdchip"><code id="cta1">git clone https://github.com/Parithosh-Varma/TaskBridge.git</code><button data-copy="cta1">copy</button></div>
-  <div class="hero-cta">
-    <a class="btn btn-solid" href="quickstart.html">Read the quickstart</a>
-    <a class="btn btn-ghost" href="https://github.com/Parithosh-Varma/TaskBridge">View source</a>
-  </div>
-</section>
-</div>
-
-<footer><div class="wrap foot">
-  <a class="brand" href="index.html"><span class="brand-mark">⇄</span>TaskBridge</a>
-  <a href="quickstart.html">Quickstart</a><a href="architecture.html">Architecture</a><a href="faq.html">FAQ</a>
-  <a href="ascii.html">ascii edition</a>
-  <a href="https://github.com/Parithosh-Varma/TaskBridge">GitHub</a>
-  <span class="sp">© <span id="yr"></span> · MIT-minded, check repo for license</span>
-</div></footer>
-<script src="main.js"></script>
-<script src="landing.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TaskBridge — Claude plans. OpenCode builds.</title>
+    <meta
+      name="description"
+      content="Dispatch real coding work from Claude to headless OpenCode agents through a durable SQLite queue. 16 MCP tools, worktree isolation, two-way questions — one command to install."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230B0B0C'/><text x='16' y='22' font-family='monospace' font-size='15' fill='%23E3A83E' text-anchor='middle'>⇄</text></svg>"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap"
+      rel="stylesheet"
+    />
+    <meta name="theme-color" content="#0B0B0C" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>

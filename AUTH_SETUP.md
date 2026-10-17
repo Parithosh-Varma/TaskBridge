@@ -13,12 +13,15 @@ Run the install script once:
 ```
 
 This will:
-1. Generate a secure 64-character hex token (like `96219e57...`)
-2. Save it to `.bridge-token` file
-3. Install Python dependencies
-4. Display your token **once** — save it immediately!
+1. Prompt for your ngrok Authtoken (press Enter to keep an existing ngrok config)
+2. Install dependencies into `.venv` (created if missing)
+3. Generate a 64-character hex token into `.bridge-token`
+4. Open the ngrok tunnel and pair `MCP_ALLOWED_HOSTS` automatically
+5. Print the public URL **and** the bearer token box
+6. Serve the MCP server in the foreground
 
-The token remains safe with you and unlocks the MCP server.
+The token is reused on later runs — regenerate it with `./install.sh --rotate`.
+It remains safe with you and unlocks the MCP server.
 
 ## How It Works
 
@@ -76,6 +79,31 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 For Claude Web / ChatGPT Web, configure the MCP server URL with headers:
 - URL: `https://your-tunnel/mcp`
 - Headers: `Authorization: Bearer YOUR_TOKEN`
+
+### OAuth Sign-In (claude.ai custom connectors)
+Claude's custom connector flow negotiates MCP authorization before connecting.
+TaskBridge publishes the required documents and flows on the same port/tunnel URL
+(see `oauth_service.py`; no external identity provider needed):
+
+- `/.well-known/oauth-protected-resource[/mcp]` — PRM (RFC 9728)
+- `/.well-known/oauth-authorization-server` — AS metadata (RFC 8414)
+- `/register` (dynamic client registration), `/authorize` (consent), `/token` (PKCE)
+
+Flow: add the connector with `https://your-tunnel/mcp` → Claude detects OAuth →
+your browser opens `https://your-tunnel/authorize` → paste your TaskBridge access
+code (the `.bridge-token` value, or `TASKBRIDGE_CONSENT_SECRET` if you set one) →
+click **"Yes, this was me who is logging in — Approve"**. Claude then carries an
+access token (24 h, refreshable 30 d) automatically — no static header config needed.
+
+Tokens are HS256 JWTs signed with `.oauth-key`; the static bearer token continues
+to work everywhere (curl, dashboard, MCP) for backward compatibility.
+
+Verify the whole chain anytime:
+
+```bash
+.venv/bin/python oauth_selftest.py http://127.0.0.1:8000
+.venv/bin/python oauth_selftest.py https://your-tunnel
+```
 
 ### Local Development
 Stdio transport (Claude Desktop) doesn't require auth — it's localhost only.

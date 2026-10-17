@@ -1,0 +1,24 @@
+{
+  "name": "taskbridge-site",
+  "private": true,
+  "version": "3.0.0",
+  "type": "module",
+  "description": "TaskBridge marketing site — interactive ASCII, scroll-driven.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "banners": "node scripts/gen-banners.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "figlet": "^1.7.0",
+    "playwright-core": "^1.48.2",
+    "vite": "^5.4.8"
+  }
+}
