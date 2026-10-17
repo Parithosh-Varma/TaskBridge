@@ -87,13 +87,20 @@ TaskBridge publishes the required documents and flows on the same port/tunnel UR
 
 - `/.well-known/oauth-protected-resource[/mcp]` — PRM (RFC 9728)
 - `/.well-known/oauth-authorization-server` — AS metadata (RFC 8414)
-- `/register` (dynamic client registration), `/authorize` (consent), `/token` (PKCE)
+- `/register` (dynamic client registration), `/authorize` (consent), `/token` (PKCE), `/revoke`
 
 Flow: add the connector with `https://your-tunnel/mcp` → Claude detects OAuth →
-your browser opens `https://your-tunnel/authorize` → paste your TaskBridge access
-code (the `.bridge-token` value, or `TASKBRIDGE_CONSENT_SECRET` if you set one) →
-click **"Yes, this was me who is logging in — Approve"**. Claude then carries an
+your browser opens `https://your-tunnel/authorize` → paste your **access code**
+(`TASKBRIDGE_CONSENT_SECRET` env, the `.consent-secret` file created by
+`start_public.sh`, or — legacy — the `.bridge-token` value) → click
+**"Yes, this was me who is logging in — Approve"**. Claude then carries an
 access token (24 h, refreshable 30 d) automatically — no static header config needed.
+
+The consent secret is separate from the bearer token by default (`start_public.sh`
+generates `.consent-secret`, chmod 600), so the credential you paste in a browser
+is not the same secret that unlocks the API. Failed consent attempts are
+rate-limited (default 10 per 15 min). PKCE is S256-only. `/revoke` (consent-gated)
+kills a client's refresh tokens; access tokens simply age out within 24 h.
 
 Tokens are HS256 JWTs signed with `.oauth-key`; the static bearer token continues
 to work everywhere (curl, dashboard, MCP) for backward compatibility.
@@ -107,14 +114,20 @@ Verify the whole chain anytime:
 
 ### Local Development
 Stdio transport (Claude Desktop) doesn't require auth — it's localhost only.
+HTTP transports **refuse to start** without a token (`BRIDGE_AUTH_TOKEN` or
+`.bridge-token`): a public endpoint must never run open.
 
 ## Security Notes
 
 - Token is never logged
 - Uses constant-time comparison (hmac.compare_digest)
-- 401 returned for invalid/missing tokens
+- 401 returned for invalid/missing tokens; HTTP mode fails closed without a token
 - `/health` remains open for monitoring
-- Token can be rotated by deleting `.bridge-token` and re-running `./install.sh`
+- Bearer token can be rotated by deleting `.bridge-token` and re-running `./install.sh`
+- Consent secret can be rotated by deleting `.consent-secret` and re-running `./start_public.sh`
+- `ngrok` free endpoints add an `ngrok-agent-ips` header (your IP) to every
+  response and cannot strip response headers — use the cloudflared path
+  (omit `NGROK_DOMAIN`) if that leak matters for your setup
 
 ## Troubleshooting
 

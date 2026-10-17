@@ -14,14 +14,19 @@ Endpoints (all served on the same port / tunnel URL as MCP):
   GET  /authorize                                    human consent page
   POST /authorize                                    approve -> one-time code (302)
   POST /token                                        code+PKCE or refresh -> JWT
+  POST /revoke                                       consent-gated refresh revocation
 
 Tokens are HS256 JWTs (key persisted in .oauth-key, chmod 600). Token expiry defaults:
   access: 24 h (TASKBRIDGE_TOKEN_TTL_SEC)
-  refresh: 30 d (TASKBRIDGE_REFRESH_TTL_SEC), rotated on use.
+  refresh: 30 d (TASKBRIDGE_REFRESH_TTL_SEC), rotated on use (atomic: one
+  redemption per refresh token, races lose).
 
 The human barrier ("Yes, this was me who is logging in") is enforced at /authorize:
-approval requires the TaskBridge access code (.bridge-token value, or the value of
-TASKBRIDGE_CONSENT_SECRET if you prefer a memorable pin).
+approval requires the consent secret — TASKBRIDGE_CONSENT_SECRET env, the
+.consent-secret file, or (legacy) the .bridge-token value. Failed attempts hit a
+sliding-window block (default 10 in 15 min, persisted until restart), and /revoke
+shares the same gate. PKCE is S256 only (OAuth 2.1 — no "plain"). /register is
+public (claude.ai registers before login) but throttled and capped.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import jwt
 from starlette.requests import Request
@@ -43,11 +49,36 @@ from starlette.responses import JSONResponse, Response
 HERE = Path(__file__).parent
 OAUTH_DB = Path(os.environ.get("OAUTH_DB_PATH", HERE / "oauth.db"))
 KEY_FILE = HERE / ".oauth-key"
+CONSENT_FILE = HERE / ".consent-secret"
 
 ACCESS_TTL = int(os.environ.get("TASKBRIDGE_TOKEN_TTL_SEC", str(24 * 3600)))
 REFRESH_TTL = int(os.environ.get("TASKBRIDGE_REFRESH_TTL_SEC", str(30 * 86400)))
 CODE_TTL = 300
 SUPPORTED_SCOPES = ["mcp:tools"]
+
+# /register is unauthenticated by protocol necessity (claude.ai calls it before
+# any login), so it gets a global sliding-window throttle plus a row cap:
+_REG_WINDOW_SEC = 600
+_REG_MAX_PER_WINDOW = 20
+_REG_MAX_ROWS = 500
+_reg_log: list[float] = []  # single-process server; no lock needed at this scale
+
+# Redirect-URI allowlist for dynamic client registration: only these hosts may
+# receive an authorization code (plus http loopback for local MCP clients).
+# Extend with TASKBRIDGE_ALLOWED_REDIRECT_HOSTS=host1,host2 (subdomains match).
+ALLOWED_REDIRECT_HOSTS = [h.strip().lower() for h in os.environ.get(
+    "TASKBRIDGE_ALLOWED_REDIRECT_HOSTS",
+    "claude.ai,claude.com,anthropic.com,chatgpt.com,openai.com",
+).split(",") if h.strip()]
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+# Consent brute-force guard: N failed "this was me" attempts inside the window
+# block further attempts (in-memory, resets on restart).
+CONSENT_MAX_ATTEMPTS = max(1, int(os.environ.get("TASKBRIDGE_CONSENT_MAX_ATTEMPTS", "10")))
+CONSENT_WINDOW_SEC = max(60, int(os.environ.get("TASKBRIDGE_CONSENT_WINDOW_SEC", "900")))
+
+# Cap on registered OAuth clients — /register is open, so the table must not grow forever.
+MAX_CLIENTS = max(10, int(os.environ.get("TASKBRIDGE_MAX_CLIENTS", "200")))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS oauth_clients (
@@ -97,6 +128,10 @@ _KEY = _signing_key()
 def _db() -> sqlite3.Connection:
     conn = sqlite3.connect(OAUTH_DB)
     conn.executescript(_SCHEMA)
+    try:
+        OAUTH_DB.chmod(0o600)
+    except OSError:
+        pass
     return conn
 
 
@@ -126,16 +161,64 @@ def _load_bridge_token() -> str:
 
 
 def _static_secret() -> str:
-    """The human's secret: TASKBRIDGE_CONSENT_SECRET, else the bridge token."""
+    """The human's consent secret: TASKBRIDGE_CONSENT_SECRET env, then the
+    .consent-secret file, then (legacy) the bridge token. Kept separate from
+    the API bearer token by default so the consent gate and the MCP
+    credential aren't the same string."""
     secret = os.environ.get("TASKBRIDGE_CONSENT_SECRET", "").strip()
     if secret:
         return secret
+    try:
+        if CONSENT_FILE.exists():
+            file_secret = CONSENT_FILE.read_text().strip()
+            if file_secret:
+                return file_secret
+    except (OSError, ValueError):
+        pass
     return _load_bridge_token()
 
 
 def consent_secret_matches(value: str) -> bool:
     expected = _static_secret()
     return bool(expected) and hmac.compare_digest(value.strip(), expected)
+
+
+def _redirect_allowed(uri: str) -> bool:
+    """True if `uri` may receive an authorization code (parsed allowlist — no prefix games)."""
+    if not isinstance(uri, str):
+        return False
+    parts = urlsplit(uri)
+    host = (parts.hostname or "").lower()
+    if not host:
+        return False
+    if parts.scheme == "http" and host in LOOPBACK_HOSTS:
+        return True
+    if parts.scheme != "https":
+        return False
+    return any(host == d or host.endswith("." + d) for d in ALLOWED_REDIRECT_HOSTS)
+
+
+_consent_failures: list[float] = []
+
+
+def consent_rate_limited() -> int:
+    """Seconds to wait before another consent attempt, or 0 when allowed."""
+    now = time.time()
+    fresh = [t for t in _consent_failures if now - t < CONSENT_WINDOW_SEC]
+    _consent_failures[:] = fresh
+    if len(fresh) < CONSENT_MAX_ATTEMPTS:
+        return 0
+    return max(1, int(CONSENT_WINDOW_SEC - (now - fresh[0])))
+
+
+def _consent_failed() -> None:
+    _consent_failures.append(time.time())
+
+
+def _clean_scope(raw: str) -> str:
+    """Keep only supported scopes; default to all supported when nothing parses."""
+    kept = [s for s in (raw or "").replace(",", " ").split() if s in SUPPORTED_SCOPES]
+    return " ".join(kept) or " ".join(SUPPORTED_SCOPES)
 
 
 def _origin_from_request(request: Request) -> str:
@@ -225,18 +308,17 @@ def _b64url_no_pad(raw: bytes) -> str:
 
 
 def _pkce_ok(challenge: str, method: str, verifier: str) -> bool:
-    if method == "plain":
-        return hmac.compare_digest(challenge, verifier)
-    if method in ("S256",):
+    if method == "S256":
         return hmac.compare_digest(challenge, _b64url_no_pad(hashlib.sha256(verifier.encode()).digest()))
     return False
 
 
-def _oauth_error(error: str, status: int = 400, description: str = "") -> JSONResponse:
+def _oauth_error(error: str, status: int = 400, description: str = "",
+                 headers: dict | None = None) -> JSONResponse:
     body = {"error": error}
     if description:
         body["error_description"] = description
-    return JSONResponse(body, status_code=status)
+    return JSONResponse(body, status_code=status, headers=headers)
 
 
 # ---------------------------------------------------------------- routes
@@ -260,28 +342,47 @@ def register_routes(mcp) -> None:
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
+    def _as_metadata(origin: str) -> dict:
+        return {
+            "issuer": origin,
+            "authorization_endpoint": f"{origin}/authorize",
+            "token_endpoint": f"{origin}/token",
+            "registration_endpoint": f"{origin}/register",
+            "revocation_endpoint": f"{origin}/revoke",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "refresh_token"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["none"],
+            "scopes_supported": SUPPORTED_SCOPES,
+            "service_documentation": "https://github.com/Parithosh-Varma/TaskBridge",
+        }
+
+    # The /mcp-suffixed variant matters: ChatGPT fetches
+    # /.well-known/oauth-authorization-server/mcp (Claude only asks for the
+    # top-level form) and fails the connector with "Failed to resolve OAuth
+    # client" when it is missing.
     @mcp.custom_route("/.well-known/oauth-authorization-server", methods=["GET"])
+    @mcp.custom_route("/.well-known/oauth-authorization-server/mcp", methods=["GET"])
+    @mcp.custom_route("/.well-known/oauth-authorization-server/mcp/", methods=["GET"])
     @mcp.custom_route("/.well-known/openid-configuration", methods=["GET"])
     async def authorization_server_metadata(request: Request) -> JSONResponse:
         origin = _origin_from_request(request)
         return JSONResponse(
-            {
-                "issuer": origin,
-                "authorization_endpoint": f"{origin}/authorize",
-                "token_endpoint": f"{origin}/token",
-                "registration_endpoint": f"{origin}/register",
-                "response_types_supported": ["code"],
-                "grant_types_supported": ["authorization_code", "refresh_token"],
-                "code_challenge_methods_supported": ["S256", "plain"],
-                "token_endpoint_auth_methods_supported": ["none"],
-                "scopes_supported": SUPPORTED_SCOPES,
-                "service_documentation": "https://github.com/Parithosh-Varma/TaskBridge",
-            },
+            _as_metadata(origin),
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
     @mcp.custom_route("/register", methods=["POST"])
     async def register(request: Request) -> JSONResponse:
+        # global sliding-window throttle: unauthenticated endpoint, so keep it slow
+        now = time.time()
+        while _reg_log and _reg_log[0] <= now - _REG_WINDOW_SEC:
+            _reg_log.pop(0)
+        if len(_reg_log) >= _REG_MAX_PER_WINDOW:
+            return _oauth_error("too_many_requests", 429,
+                                "too many registrations — retry later",
+                                headers={"Retry-After": "60"})
+        _reg_log.append(now)
         try:
             body = await request.json()
         except Exception:
@@ -289,13 +390,16 @@ def register_routes(mcp) -> None:
         uris = body.get("redirect_uris") or []
         if not isinstance(uris, list) or not uris:
             return _oauth_error("invalid_request", 400, "redirect_uris required")
-        for uri in uris:
-            if not isinstance(uri, str) or not (
-                uri.startswith("https://")
-                or uri.startswith("http://127.0.0.1")
-                or uri.startswith("http://localhost")
-            ):
-                return _oauth_error("invalid_request", 400, f"redirect_uri not allowed: {uri}")
+        bad = [u for u in uris if not _redirect_allowed(u)]
+        if bad:
+            return _oauth_error("invalid_request", 400,
+                                f"redirect_uri not allowed: {bad[0]} "
+                                "(extend TASKBRIDGE_ALLOWED_REDIRECT_HOSTS to permit it)")
+        with _db() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM oauth_clients").fetchone()[0]
+        if count >= MAX_CLIENTS:
+            return _oauth_error("temporarily_unavailable", 429,
+                                f"client limit reached ({MAX_CLIENTS}) — prune oauth.db to reset")
         client_id = uuid.uuid4().hex[:16]
         with _db() as conn:
             conn.execute(
@@ -336,20 +440,35 @@ def register_routes(mcp) -> None:
         origin = _origin_from_request(request)
         with _db() as conn:
             row = conn.execute(
-                "SELECT client_name, redirect_uris FROM oauth_clients WHERE client_id = ?",
+                "SELECT client_name, redirect_uris, created_at FROM oauth_clients WHERE client_id = ?",
                 (client_id,),
             ).fetchone()
         if not row:
             return _oauth_error("invalid_client", 401, "unknown or unregistered client_id")
         uris = json.loads(row[1])
-        if redirect_uri not in uris:
+        if redirect_uri not in uris or not _redirect_allowed(redirect_uri):
             return _oauth_error("invalid_request", 400, "redirect_uri not registered for this client")
-        if not challenge or challenge_method not in ("S256", "plain"):
-            return _oauth_error("invalid_request", 400, "code_challenge (PKCE) required")
+        if not challenge or challenge_method != "S256":
+            return _oauth_error("invalid_request", 400, "code_challenge (PKCE S256) required")
         _aud_ok = _aud_matches(resource or f"{origin}/mcp", origin)
         warn = "" if _aud_ok else "<p><em>Note: resource is outside this server's origin — it will still be bound as the token audience.</em></p>"
         client_name = esc(row[0] or f"App {esc(client_id[:8])}")
         display_resource = esc(resource or (request.headers.get("host", "") + "/mcp"))
+        reg_age = ""
+        try:
+            import datetime as _dt
+            created = _dt.datetime.fromisoformat(str(row[2]))
+            age_min = (_dt.datetime.now(_dt.timezone.utc) - created).total_seconds() / 60
+            if age_min < 2:
+                reg_age = "just now"
+            elif age_min < 60:
+                reg_age = f"{int(age_min)} min ago"
+            elif age_min < 24 * 60:
+                reg_age = f"{int(age_min / 60)} h ago"
+            else:
+                reg_age = created.strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            reg_age = "unknown"
         html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -374,9 +493,11 @@ def register_routes(mcp) -> None:
 <body><div class="card">
   <p class="brand">⇄ TaskBridge</p>
   <h1>Connect approval</h1>
-  <p><strong>{client_name}</strong> wants to reach the TaskBridge dispatch queue:</p>
+  <p><strong>{client_name}</strong> (client registered: {reg_age}) wants to reach the TaskBridge dispatch queue:</p>
   <div class="mono">{display_resource}</div>
   <p>Scope requested: <code>{esc(scope or "mcp:tools")}</code></p>
+  <p>Approving gives this app a bearer token — enough to <strong>queue and steer agent tasks
+  that run code, edit files, and use your credentials on this machine</strong>. Only approve apps you recognize.</p>
   {warn}
   <form method="post" action="/authorize">
     <input type="hidden" name="client_id" value="{esc(client_id)}">
@@ -386,13 +507,19 @@ def register_routes(mcp) -> None:
     <input type="hidden" name="resource" value="{esc(resource)}">
     <input type="hidden" name="scope" value="{esc(scope)}">
     <input type="hidden" name="state" value="{esc(state)}">
-    <p>Access code <small>(your TaskBridge token — proves “this was me”)</small>:</p>
+    <p>Access code <small>(from .consent-secret or TASKBRIDGE_CONSENT_SECRET — proves “this was me”)</small>:</p>
     <input type="password" name="consent_secret" required autocomplete="off" placeholder="paste your access code">
     <button type="submit">Yes, this was me who is logging in — Approve</button>
   </form>
   <p><small>One-time code lives 5 minutes. Tokens issued: access {ACCESS_TTL // 3600}h, refresh {REFRESH_TTL // 86400}d.</small></p>
 </div></body></html>"""
-        return Response(html, media_type="text/html")
+        return Response(html, media_type="text/html", headers={
+            "Content-Security-Policy": ("default-src 'none'; style-src 'unsafe-inline'; "
+                                        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"),
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
+            "Cache-Control": "no-store",
+        })
 
     @mcp.custom_route("/authorize", methods=["POST"])
     async def authorize_submit(request: Request) -> Response:
@@ -400,8 +527,19 @@ def register_routes(mcp) -> None:
         p = {k: str(form.get(k, "")) for k in (
             "client_id", "redirect_uri", "code_challenge", "code_challenge_method",
             "resource", "scope", "state", "consent_secret")}
+        if not p["code_challenge"] or p["code_challenge_method"] != "S256":
+            # same S256 rule as the GET page — an approval must never mint a
+            # code bound to a weaker challenge scheme
+            return _oauth_error("invalid_request", 400, "code_challenge (PKCE S256) required")
+        wait = consent_rate_limited()
+        if wait:
+            return _oauth_error("too_many_requests", 429,
+                                f"too many failed attempts — retry in {wait}s",
+                                headers={"Retry-After": str(wait)})
         if not consent_secret_matches(p["consent_secret"]):
+            _consent_failed()
             return _oauth_error("access_denied", 403, "access code did not match — ‘this was me’ could not be confirmed")
+        _consent_failures.clear()
         with _db() as conn:
             row = conn.execute(
                 "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?", (p["client_id"],)
@@ -409,7 +547,7 @@ def register_routes(mcp) -> None:
         if not row:
             return _oauth_error("invalid_client", 401, "unknown client")
         uris = json.loads(row[0])
-        if p["redirect_uri"] not in uris:
+        if p["redirect_uri"] not in uris or not _redirect_allowed(p["redirect_uri"]):
             return _oauth_error("invalid_request", 400, "redirect_uri not registered")
         code = secrets.token_urlsafe(32)
         with _db() as conn:
@@ -417,7 +555,7 @@ def register_routes(mcp) -> None:
             conn.execute(
                 "INSERT INTO oauth_codes (code, client_id, redirect_uri, challenge, challenge_method, resource, scope, expires_at) VALUES (?,?,?,?,?,?,?,?)",
                 (code, p["client_id"], p["redirect_uri"], p["code_challenge"],
-                 p["code_challenge_method"], p["resource"], p["scope"],
+                 p["code_challenge_method"], p["resource"], _clean_scope(p["scope"]),
                  time.time() + CODE_TTL),
             )
             conn.commit()
@@ -443,15 +581,14 @@ def register_routes(mcp) -> None:
         else:
             form = dict(await request.form())
         grant = form.get("grant_type", "")
-        client_id = form.get("client_id", "")
+        client_id = (form.get("client_id") or "").strip()
         origin = _origin_from_request(request)
-        with _db() as conn:
-            row = conn.execute(
-                "SELECT redirect_uris FROM oauth_clients WHERE client_id = ?", (client_id,)
-            ).fetchone()
-        if not row:
-            return _oauth_error("invalid_client", 401, "unknown client")
-        uris = json.loads(row[0])
+
+        def _client_exists(cid: str) -> bool:
+            with _db() as conn:
+                return conn.execute(
+                    "SELECT 1 FROM oauth_clients WHERE client_id = ?", (cid,)
+                ).fetchone() is not None
 
         if grant == "authorization_code":
             code = form.get("code", "")
@@ -462,16 +599,27 @@ def register_routes(mcp) -> None:
                 ).fetchone()
             if not prow:
                 return _oauth_error("invalid_grant", 400, "code not found, expired or already used")
+            if not client_id:
+                # ChatGPT omits client_id at token exchange. The one-time code
+                # row was already bound to a single client at /authorize time,
+                # so restore that binding instead of failing the client lookup.
+                client_id = prow[0]
+            if not _client_exists(client_id):
+                return _oauth_error("invalid_client", 401, "unknown client")
             if prow[0] != client_id:
                 return _oauth_error("invalid_grant", 400, "code belongs to another client")
-            if prow[1] != form.get("redirect_uri", ""):
+            redirect_uri = form.get("redirect_uri", "") or prow[1]
+            if prow[1] != redirect_uri:
                 return _oauth_error("invalid_grant", 400, "redirect_uri mismatch")
             verifier = form.get("code_verifier", "")
             if not verifier or not _pkce_ok(prow[2], prow[3], verifier):
                 return _oauth_error("invalid_grant", 400, "PKCE verification failed")
-            with _db() as conn:  # one-time use: consume immediately
-                conn.execute("DELETE FROM oauth_codes WHERE code = ?", (code,))
+            with _db() as conn:  # one-time use: consume atomically, races lose
+                cur = conn.execute("DELETE FROM oauth_codes WHERE code = ?", (code,))
                 conn.commit()
+                consumed = cur.rowcount
+            if consumed != 1:  # concurrent redemption already burned this code
+                return _oauth_error("invalid_grant", 400, "code not found, expired or already used")
             access = _issue_access(origin, client_id, prow[4], prow[5])
             refresh = _issue_refresh(origin, client_id, prow[4])
             return JSONResponse(
@@ -496,17 +644,18 @@ def register_routes(mcp) -> None:
             if claims.get("iss", "").rstrip("/") != origin.rstrip("/"):
                 return _oauth_error("invalid_grant", 400, "issuer mismatch")
             jti = claims["jti"]
-            with _db() as conn:
-                rrow = conn.execute(
-                    "SELECT client_id, expires_at FROM oauth_refresh WHERE jti = ?", (jti,)
-                ).fetchone()
-            if not rrow:
-                return _oauth_error("invalid_grant", 400, "refresh token already rotated or revoked")
-            if rrow[0] != client_id:
+            if not client_id:
+                # ChatGPT-style refreshes may omit client_id; the signed cid
+                # claim is the binding and is verified in the next line.
+                client_id = claims.get("cid", "")
+            if claims.get("cid", "") != client_id:
                 return _oauth_error("invalid_grant", 400, "refresh token belongs to another client")
-            with _db() as conn:  # rotation: consume old, mint new
-                conn.execute("DELETE FROM oauth_refresh WHERE jti = ?", (jti,))
+            with _db() as conn:
+                cur = conn.execute("DELETE FROM oauth_refresh WHERE jti = ?", (jti,))
+                consumed = cur.rowcount
                 conn.commit()
+            if consumed != 1:  # row vanished between SELECT and DELETE — token already used
+                return _oauth_error("invalid_grant", 400, "refresh token already rotated or revoked")
             resource = str(claims.get("aud", "") or "")
             access = _issue_access(origin, client_id, resource, form.get("scope", ""))
             refresh = _issue_refresh(origin, client_id, resource)
@@ -516,8 +665,56 @@ def register_routes(mcp) -> None:
                     "token_type": "Bearer",
                     "expires_in": ACCESS_TTL,
                     "refresh_token": refresh,
-                    "scope": form.get("scope", ""),
+                    "scope": _clean_scope(form.get("scope", "")),
                 }
             )
 
         return _oauth_error("unsupported_grant_type", 400, f"grant_type {grant!r} not supported")
+
+    @mcp.custom_route("/revoke", methods=["POST"])
+    async def revoke(request: Request) -> JSONResponse:
+        """Consent-gated revocation (RFC 7009 spirit, single-user flavor).
+
+        Body (JSON or form): consent_secret + either client_id (revoke every
+        refresh token and pending code for that client) or token=<refresh JWT>
+        (revoke that one). Access tokens are stateless JWTs and die within
+        ACCESS_TTL — revoking refresh stops all renewals going forward.
+        """
+        ctype = (request.headers.get("content-type") or "").split(";")[0]
+        try:
+            if ctype == "application/json":
+                form = {k: str(v) for k, v in (await request.json()).items()}
+            else:
+                form = dict(await request.form())
+        except Exception:
+            return _oauth_error("invalid_request", 400, "malformed body")
+        wait = consent_rate_limited()
+        if wait:
+            return _oauth_error("too_many_requests", 429,
+                                f"too many failed attempts — retry in {wait}s",
+                                headers={"Retry-After": str(wait)})
+        if not consent_secret_matches(str(form.get("consent_secret", ""))):
+            _consent_failed()
+            return _oauth_error("access_denied", 403, "access code did not match")
+        _consent_failures.clear()
+        client_id = (form.get("client_id") or "").strip()
+        token_in = (form.get("token") or "").strip()
+        with _db() as conn:
+            if client_id:
+                cur = conn.execute("DELETE FROM oauth_refresh WHERE client_id = ?", (client_id,))
+                codes = conn.execute("DELETE FROM oauth_codes WHERE client_id = ?", (client_id,))
+                conn.commit()
+            elif token_in:
+                try:
+                    claims = jwt.decode(token_in, _KEY, algorithms=["HS256"],
+                                        options={"require": ["exp", "jti", "sub"]})
+                except jwt.PyJWTError:
+                    return _oauth_error("invalid_request", 400, "token invalid")
+                if claims.get("sub") != "refresh":
+                    return _oauth_error("invalid_request", 400, "pass a refresh token (sub != refresh)")
+                cur = conn.execute("DELETE FROM oauth_refresh WHERE jti = ?", (claims["jti"],))
+                conn.commit()
+            else:
+                return _oauth_error("invalid_request", 400, "client_id or token required")
+            n = cur.rowcount
+        return JSONResponse({"revoked": max(0, n), "scope": "client" if client_id else "token"})

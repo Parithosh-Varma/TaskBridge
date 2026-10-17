@@ -19,6 +19,9 @@ import hashlib
 import hmac
 import json
 import os
+import re
+import secrets
+import sys
 import time
 from pathlib import Path
 
@@ -36,6 +39,10 @@ HERE = Path(__file__).parent
 DASHBOARD_PATH = HERE / "bridge_dashboard.html"
 CLAUDE_JOBS_DIR = HERE / "claude_jobs"
 TOKEN_FILE = HERE / ".bridge-token"
+
+# Query-param ids end up inside filesystem paths (claude_jobs/, task_logs/) —
+# allow only opaque identifiers: no separators, no dots, so "../" can't escape.
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
 def _load_auth_token() -> str | None:
@@ -58,12 +65,18 @@ def _auth_middleware(app: ASGIApp) -> ASGIApp:
     - /health (open for monitoring)
     - / (dashboard page, serves HTML)
     - /.well-known/* (RFC 9728 / RFC 8414 discovery documents)
-    - /register, /authorize, /token (MCP authorization endpoints; the human
-      barrier lives on the /authorize consent page)
+    - /register, /authorize, /token, /revoke (MCP authorization endpoints;
+      /revoke is gated on the consent secret, and the human barrier for the
+      whole flow lives on the /authorize consent page)
+    - /mcp is also matched under its /mcp/ and /MCP aliases (some connectors
+      such as ChatGPT post to the URL exactly as configured)
+
+    Fails closed: if no token is configured, protected routes 401 (and
+    __main__ refuses to even serve HTTP in that state).
     """
     token = _load_auth_token()
 
-    open_paths = {"/", "/health", "/register", "/authorize", "/token"}
+    open_paths = {"/", "/health", "/register", "/authorize", "/token", "/revoke"}
 
     def _origin(scope: Scope) -> str:
         headers = {k: v for k, v in scope.get("headers", [])}
@@ -79,22 +92,11 @@ def _auth_middleware(app: ASGIApp) -> ASGIApp:
 
         path = scope.get("path", "")
 
-        # Open routes (no auth required)
-        if path in open_paths or path.startswith("/.well-known/"):
-            await app(scope, receive, send)
-            return
-
-        # If no token configured, allow all (dev mode)
-        if not token:
-            await app(scope, receive, send)
-            return
-
-        # Check Authorization header
-        auth_header = None
-        for k, v in scope.get("headers", []):
-            if k == b"authorization":
-                auth_header = v.decode()
-                break
+        # Route alias: some connectors hit /mcp/ (trailing slash) or /MCP —
+        # normalize so the auth gate and the MCP app both see the canonical /mcp.
+        if path.strip("/").lower() == "mcp" and path != "/mcp":
+            scope = {**scope, "path": "/mcp", "raw_path": b"/mcp"}
+            path = "/mcp"
 
         challenge = (
             "Bearer realm=\"mcp\", resource_metadata=\""
@@ -107,6 +109,25 @@ def _auth_middleware(app: ASGIApp) -> ASGIApp:
                 status_code=401,
                 headers={"WWW-Authenticate": challenge},
             )
+
+        # Open routes (no auth required)
+        if path in open_paths or path.startswith("/.well-known/"):
+            await app(scope, receive, send)
+            return
+
+        # Fail closed: with no token configured, every protected route is
+        # denied (startup additionally refuses to serve HTTP without one —
+        # see __main__; the old dev-mode allow-all is gone).
+        if not token:
+            await deny()(scope, receive, send)
+            return
+
+        # Check Authorization header
+        auth_header = None
+        for k, v in scope.get("headers", []):
+            if k == b"authorization":
+                auth_header = v.decode()
+                break
 
         if not auth_header or not auth_header.startswith("Bearer "):
             await deny()(scope, receive, send)
@@ -563,13 +584,38 @@ def _read_chunk(path: Path, offset: int, max_chars: int) -> tuple[str, int, int]
     return chunk.decode(errors="replace"), offset + len(chunk), total
 
 
+def _dashboard_headers(script_nonce: str | None) -> dict[str, str]:
+    """Hardening headers for the board. The page is a single inline script, so
+    when we managed to pin it with a nonce the CSP locks script-src down;
+    otherwise we still ship the frame/mime/referrer restrictions."""
+    csp = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
+           "connect-src 'self'; base-uri 'none'; form-action 'self'; "
+           "frame-ancestors 'none'")
+    if script_nonce:
+        csp = csp.replace("default-src", "script-src 'nonce-%s'; default-src" % script_nonce, 1)
+    return {
+        "Content-Security-Policy": csp,
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+    }
+
+
 @mcp.custom_route("/", methods=["GET"])
 async def dashboard_page(request: Request) -> HTMLResponse:
     try:
         html = DASHBOARD_PATH.read_text()
     except OSError:
         html = "<h1>Bridge Live</h1><p>dashboard file missing.</p>"
-    return HTMLResponse(html)
+    # Pin the one inline <script> with a per-request CSP nonce; if the html
+    # shape ever drifts, degrade gracefully instead of breaking the board.
+    nonce = secrets.token_urlsafe(16)
+    tagged, n = re.subn(r"<script>", '<script nonce="%s">' % nonce, html, count=1)
+    if n == 1:
+        html = tagged
+    else:
+        nonce = None
+    return HTMLResponse(html, headers=_dashboard_headers(nonce))
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -602,7 +648,7 @@ async def api_overview(request: Request) -> JSONResponse:
         "claude_jobs": _claude_jobs(),
         "worker_log_tail": tail,
         "server_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    })
+    }, headers={"Cache-Control": "no-store"})
 
 
 def _tail(path: Path, max_chars: int) -> tuple[str, int, int]:
@@ -627,7 +673,7 @@ async def api_tasks(request: Request) -> JSONResponse:
         tasks = [_summary(t) for t in task_store.list_tasks(status, limit, "", "")]
     except (ValueError, KeyError) as e:
         return JSONResponse({"error": str(e)[:300]}, status_code=400)
-    return JSONResponse({"tasks": tasks})
+    return JSONResponse({"tasks": tasks}, headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/api/task", methods=["GET"])
@@ -635,6 +681,9 @@ async def api_task(request: Request) -> JSONResponse:
     task_id = (request.query_params.get("id") or "").strip()
     if not task_id:
         return JSONResponse({"error": "id is required"}, status_code=400)
+    if not _SAFE_ID.fullmatch(task_id):
+        # ids are uuid hex; reject anything path-shaped before it touches a path
+        return JSONResponse({"error": "invalid id"}, status_code=400)
     try:
         off = int(request.query_params.get("log_offset", "0") or 0)
     except ValueError:
@@ -663,11 +712,10 @@ async def api_task(request: Request) -> JSONResponse:
         note = "task finished — showing final log"
     else:
         note = "streaming live — auto-refreshes every 2s"
-    return JSONResponse({
-        "task": task, "log": log, "next_offset": nxt, "start_offset": start,
-        "total_bytes": total, "done": task.get("status") in ("completed", "failed", "cancelled"),
-        "note": note,
-    })
+    return JSONResponse({"task": task, "log": log, "next_offset": nxt, "start_offset": start,
+                        "total_bytes": total, "done": task.get("status") in ("completed", "failed", "cancelled"),
+                        "note": note,
+                        }, headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/api/worker-log", methods=["GET"])
@@ -678,7 +726,8 @@ async def api_worker_log(request: Request) -> JSONResponse:
         nchars = 15000
     tail, _, total = _tail(worker_mod.HERE / "worker.log", max(100, min(nchars, 50000)))
     return JSONResponse({"log": tail, "total_bytes": total,
-                         "heartbeat": _heartbeat()})
+                         "heartbeat": _heartbeat()},
+                        headers={"Cache-Control": "no-store"})
 
 
 @mcp.custom_route("/api/claude-job", methods=["GET"])
@@ -686,6 +735,9 @@ async def api_claude_job(request: Request) -> JSONResponse:
     job_id = (request.query_params.get("id") or "").strip()
     if not job_id:
         return JSONResponse({"error": "id is required"}, status_code=400)
+    if not _SAFE_ID.fullmatch(job_id):
+        # blocks "../" traversal: meta/out paths are built from job_id directly
+        return JSONResponse({"error": "invalid id"}, status_code=400)
     meta = CLAUDE_JOBS_DIR / f"{job_id}.json"
     out_path = CLAUDE_JOBS_DIR / f"{job_id}.out"
     if not meta.exists():
@@ -707,7 +759,8 @@ async def api_claude_job(request: Request) -> JSONResponse:
     tail = out_path.read_text()[-max(100, min(nchars, 50000)):] if out_path.exists() else ""
     return JSONResponse({"job_id": job_id, "status": job.get("status", ""),
                          "backend": job.get("backend", ""),
-                         "output_tail": tail})
+                         "output_tail": tail},
+                        headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":
@@ -723,7 +776,16 @@ if __name__ == "__main__":
     args = ap.parse_args()
     mcp.settings.host = args.host
     mcp.settings.port = args.port
-    
+
+    # Fail closed at startup: an HTTP transport sits behind a public tunnel,
+    # and serving it without a credential means anyone on the internet can
+    # queue agent tasks (i.e. run code on this machine). stdio is spawned by
+    # a local client and needs no token.
+    if args.transport != "stdio" and not _load_auth_token():
+        print("refusing to serve HTTP without BRIDGE_AUTH_TOKEN or .bridge-token — "
+              "a public MCP endpoint must not run open", file=sys.stderr)
+        raise SystemExit(1)
+
     # Wrap HTTP app with auth middleware
     if args.transport != "stdio":
         original_streamable_app = mcp.streamable_http_app

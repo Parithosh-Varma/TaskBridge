@@ -3,14 +3,30 @@
 #   1. cloudflared quick tunnel -> parse its public hostname
 #   2. MCP server with exactly that hostname allowlisted
 # Run again any time the URL changes; it re-pairs everything itself.
+#
+# Privacy note (ngrok free): the ngrok edge adds an `ngrok-agent-ips` header
+# (the tunnel operator's IP) to every response, and free-plan endpoints can't
+# strip response headers. If that leak matters, run without NGROK_DOMAIN to
+# use a cloudflared quick tunnel instead — it adds no such header.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # Fixed URL mode: set NGROK_DOMAIN (or write it to .ngrok-domain) after
 # reserving a free static domain at https://dashboard.ngrok.com/domains
 # e.g. echo "mybridge.ngrok-free.dev" > .ngrok-domain
 NGROK_DOMAIN="${NGROK_DOMAIN:-$(cat "$HERE/.ngrok-domain" 2>/dev/null || true)}"
-# Load bearer token if available
+# Load bearer token if available (server refuses to start without one)
 BRIDGE_AUTH_TOKEN="$(cat "$HERE/.bridge-token" 2>/dev/null || true)"
+if [ -z "$BRIDGE_AUTH_TOKEN" ] && [ ! -f "$HERE/.bridge-token" ]; then
+  echo "no .bridge-token found — generating one (chmod 600)"
+  openssl rand -hex 32 > "$HERE/.bridge-token" && chmod 600 "$HERE/.bridge-token"
+  BRIDGE_AUTH_TOKEN="$(cat "$HERE/.bridge-token")"
+fi
+# OAuth consent secret ("this was me" code on /authorize) — separate from the
+# API bearer token so one leaked string doesn't open both doors.
+if [ -z "${TASKBRIDGE_CONSENT_SECRET:-}" ] && [ ! -f "$HERE/.consent-secret" ]; then
+  openssl rand -hex 16 > "$HERE/.consent-secret" && chmod 600 "$HERE/.consent-secret"
+  echo "🔑 consent secret generated -> $HERE/.consent-secret (used on the /authorize page)"
+fi
 pkill -f "cloudflared tunnel --url" 2>/dev/null
 pkill -f "ngrok http" 2>/dev/null
 pkill -f "opencode_bridge_mcp.py --transport" 2>/dev/null
@@ -30,7 +46,9 @@ else
   [ -z "$URL" ] && echo "tunnel failed to start (see cloudflared.log)" && exit 1
 fi
 HOST="${URL#https://}"
-MCP_ALLOWED_HOSTS="$HOST" BRIDGE_AUTH_TOKEN="$BRIDGE_AUTH_TOKEN" nohup "$HERE/.venv/bin/python" "$HERE/opencode_bridge_mcp.py" \
+MCP_ALLOWED_HOSTS="$HOST" BRIDGE_AUTH_TOKEN="$BRIDGE_AUTH_TOKEN" \
+  TASKBRIDGE_CONSENT_SECRET="${TASKBRIDGE_CONSENT_SECRET:-$(cat "$HERE/.consent-secret" 2>/dev/null || true)}" \
+  nohup "$HERE/.venv/bin/python" "$HERE/opencode_bridge_mcp.py" \
   --transport streamable-http --port 8000 > "$HERE/mcp_http.log" 2>&1 &
 sleep 4
 echo "MCP public URL: $URL/mcp"

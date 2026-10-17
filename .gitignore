@@ -14,6 +14,7 @@ heartbeat.json
 .worker.lock
 .ngrok-domain
 .bridge-token
+.consent-secret
 task_logs/
 claude_jobs/
 worktrees/

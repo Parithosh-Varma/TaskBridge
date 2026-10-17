@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -27,6 +28,11 @@ CREATE TABLE IF NOT EXISTS tasks (
 """
 
 VALID_STATUSES = {"pending", "running", "completed", "failed", "cancelled", "waiting"}
+
+# Model ids go into an argv slot (`opencode run --model <id>`); keep them to
+# plain identifier characters so a model value can't smuggle CLI flags or
+# whitespace. Real ids look like `opencode/cat-jam-free` or `qwen3-coder`.
+_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:\-]{0,119}$")
 
 
 def _now() -> str:
@@ -93,6 +99,11 @@ def submit_task(title: str, instructions: str, working_dir: str = "", created_by
     permission = (permission or "full").strip()
     if permission not in ("full", "no-network", "readonly", "no-shell"):
         raise ValueError("permission must be full|no-network|readonly|no-shell")
+    model = (model or "").strip()
+    retry_model = (retry_model or "").strip()
+    for m in (model, retry_model):
+        if m and not _MODEL_ID.fullmatch(m):
+            raise ValueError(f"invalid model id: {m!r} — letters, digits and ./_:- only")
     depends_on = list(depends_on or [])
     task_id = uuid.uuid4().hex[:12]
     now = _now()
@@ -109,10 +120,10 @@ def submit_task(title: str, instructions: str, working_dir: str = "", created_by
             " permission, worktree_repo, worktree_branch, worktree_keep,"
             " status, created_by, created_at, updated_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-            (task_id, title, instructions, working_dir or "", model or "",
+            (task_id, title, instructions, working_dir or "", model,
              json.dumps(depends_on), int(priority or 0),
              max(30, min(int(timeout_sec or 600), 1800)), max(0, min(int(max_retries or 0), 5)),
-             retry_model or "", _as_json_list(tags), idem_key or None,
+             retry_model, _as_json_list(tags), idem_key or None,
              permission, worktree_repo or "", worktree_branch or "",
              1 if worktree_keep else 0, created_by, now, now),
         )

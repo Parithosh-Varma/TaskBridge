@@ -629,7 +629,12 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
     import selectors as _selectors
     tid = task["id"]
     workdir = task.get("_cwd") or str(HERE)
-    model = task.get("model") or default_model()
+    model = (task.get("model") or "").strip()
+    if model and not task_store._MODEL_ID.fullmatch(model):
+        # argv safety: a model string that could pass CLI flags is not a model
+        print(f"task {tid}: invalid model {model!r} — falling back to worker default", flush=True)
+        model = ""
+    model = model or default_model()
     timeout = max(30, min(int(task.get("timeout_sec") or 600), 1800))
     permission = task.get("permission") or "full"
     # Enforcement truth table (verified by probing, Oct 2026):
