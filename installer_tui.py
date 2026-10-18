@@ -216,30 +216,34 @@ def ask_secret(hint: str) -> str | None:
     """
     if termios is None:
         return None
+    # /dev/tty is not seekable, so "r+" (buffered random access) fails with
+    # OSError on Linux. Open two plain handles — one to read, one to write.
     try:
-        tty = open("/dev/tty", "r+")  # noqa: SIM115
+        reader = open("/dev/tty", "r")  # noqa: SIM115
+        writer = open("/dev/tty", "w")  # noqa: SIM115
     except OSError:
         return None
     try:
-        fd = tty.fileno()
+        fd = reader.fileno()
         try:
             attrs = termios.tcgetattr(fd)
         except termios.error:
             return None
         quiet = list(attrs)
         quiet[3] = attrs[3] & ~termios.ECHO
-        tty.write(f"{hint}\n\033[1m❯\033[0m ")
-        tty.flush()
+        writer.write(f"{hint}\n\033[1m❯\033[0m ")
+        writer.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, quiet)
         try:
-            line = tty.readline()
+            line = reader.readline()
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
-            tty.write("\n")
-            tty.flush()
+            writer.write("\n")
+            writer.flush()
         return line.strip()
     finally:
-        tty.close()
+        reader.close()
+        writer.close()
 
 
 # --------------------------------------------------------------------------- #
