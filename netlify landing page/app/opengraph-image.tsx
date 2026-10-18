@@ -1,4 +1,5 @@
 import { ImageResponse } from "next/og";
+import { LOGO_DATA_URI, LOGO_WIDTH, LOGO_HEIGHT } from "@/lib/logo-data";
 
 export const dynamic = "force-static";
 export const alt = "TaskBridge — Claude plans. OpenCode builds.";
@@ -25,7 +26,12 @@ export default function OpengraphImage() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 18, fontSize: 30, color: "#9c8c72" }}>
-          <span>[=]</span>
+          <img
+            src={LOGO_DATA_URI}
+            width={Math.round((34 * LOGO_WIDTH) / LOGO_HEIGHT)}
+            height={34}
+            alt=""
+          />
           <span style={{ color: "#efe4cc", fontWeight: 700 }}>TaskBridge</span>
           <span style={{ display: "flex", alignItems: "center", gap: 10, color: "#f2a007", fontSize: 20, letterSpacing: 4 }}>
             <span style={{ width: 12, height: 12, borderRadius: 6, background: "#f2a007" }} />

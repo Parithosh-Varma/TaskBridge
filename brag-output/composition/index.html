@@ -1,0 +1,831 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <title>TaskBridge — Claude plans. OpenCode builds.</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      /* ── Fonts ───────────────────────────────────────────────────────────
+         JetBrains Mono is bundled by the renderer (400/700). The box-drawing
+         subset ships with the project so ─│┌┐└┘ keep JetBrains Mono's exact
+         0.6em advance (same fix the landing page uses). */
+      @font-face {
+        font-family: "TaskBridge Box Mono";
+        src: url("assets/fonts/jbm-box.woff2") format("woff2");
+        font-weight: 400 700;
+        unicode-range: U+2500-2502, U+250c, U+2510, U+2514, U+2518, U+251c, U+2524, U+252c, U+2534, U+253c,
+          U+2550-2551, U+256a, U+2571-2572;
+      }
+
+      :root {
+        --bg: #100c08;
+        --panel: #1a140e;
+        --panel-2: #221a12;
+        --line: #33291d;
+        --paper: #efe4cc;
+        --faint: #9c8c72;
+        --ember: #e2603a;
+        --signal: #f2a007;
+        --seal: #8fc39a;
+        --wait: #b9a3e3;
+        --ramp: linear-gradient(90deg, #e2603a, #f2a007 50%, #8fc39a);
+        --mono: "TaskBridge Box Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+      }
+      body {
+        font-family: var(--mono);
+        color: var(--paper);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      #root {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg);
+      }
+
+      .clip {
+        position: absolute;
+        inset: 0;
+      }
+
+      /* ── Background layers (untimed decor) ───────────────────────────── */
+      #bg {
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(1300px 780px at 46% 44%, #1b1410 0%, #120d09 58%, #0b0806 100%);
+      }
+      #glow {
+        position: absolute;
+        left: 40px;
+        top: 90px;
+        width: 1500px;
+        height: 900px;
+        background: radial-gradient(closest-side, rgba(226, 96, 58, 0.6), rgba(226, 96, 58, 0) 72%);
+        opacity: 0.06;
+        filter: blur(24px);
+        pointer-events: none;
+      }
+      #grain {
+        position: absolute;
+        inset: 0;
+        opacity: 0.05;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 0.93  0 0 0 0 0.82  0 0 0 1 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+        background-size: 220px 220px;
+      }
+      #blackout {
+        position: absolute;
+        inset: 0;
+        background: var(--bg);
+        opacity: 0;
+        pointer-events: none;
+        z-index: 40;
+      }
+
+      /* ── Shared type ─────────────────────────────────────────────────── */
+      .eyebrow {
+        margin: 0;
+        font-size: 21px;
+        line-height: 1.4;
+        text-transform: uppercase;
+        letter-spacing: 0.22em;
+        color: var(--faint);
+      }
+      .cursor {
+        display: inline-block;
+        width: 0.52em;
+        height: 0.94em;
+        margin-left: 0.06em;
+        background: currentColor;
+        vertical-align: -0.08em;
+        opacity: 0;
+      }
+      .typed {
+        white-space: pre;
+      }
+
+      /* ── Scene 1 — hook ─────────────────────────────────────────────── */
+      #s1 .hero-wrap {
+        position: absolute;
+        left: 140px;
+        top: 336px;
+        width: 1500px;
+      }
+      .hero {
+        margin: 34px 0 0;
+        font-size: 86px;
+        line-height: 1.08;
+        font-weight: 700;
+        letter-spacing: -0.035em;
+        color: var(--paper);
+      }
+      .hero-line {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+      }
+      .hero-line + .hero-line {
+        margin-top: 6px;
+      }
+      .mark {
+        display: block;
+        width: 64px;
+        height: 64px;
+        flex: 0 0 auto;
+      }
+      .mark-claude {
+        color: #d97757;
+      }
+      .mark-opencode {
+        color: var(--paper);
+      }
+      .ramp-text {
+        background: var(--ramp);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      #h-rule {
+        margin-top: 40px;
+        height: 2px;
+        width: 640px;
+        background: var(--ramp);
+        opacity: 0;
+        transform-origin: left center;
+      }
+
+      /* ── Scene 2 — session + dispatch board ─────────────────────────── */
+      .stage {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: stretch;
+        gap: 36px;
+        padding: 100px 104px;
+      }
+      .console {
+        position: relative;
+        flex: 0 0 1060px;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        overflow: hidden;
+      }
+      .console-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 26px;
+        border-bottom: 1px solid var(--line);
+      }
+      .console-title {
+        font-size: 19px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .task-chip {
+        font-size: 18px;
+        letter-spacing: 0.08em;
+        color: var(--paper);
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        padding: 3px 10px;
+      }
+      .console-body {
+        flex: 1;
+        padding: 26px 30px;
+      }
+      .line {
+        font-size: 24px;
+        line-height: 1.6;
+        white-space: pre;
+      }
+      .line + .line {
+        margin-top: 2px;
+      }
+      .prompt {
+        color: var(--signal);
+      }
+      .faint {
+        color: var(--faint);
+      }
+      .wait {
+        color: var(--wait);
+      }
+      .seal {
+        color: var(--seal);
+      }
+      .signal {
+        color: var(--signal);
+      }
+
+      #qbox {
+        margin: 10px 0 8px;
+        font-size: 25px;
+        line-height: 1.34;
+        color: var(--wait);
+        white-space: pre;
+      }
+      #qbox .qline {
+        opacity: 0;
+      }
+
+      #l-done {
+        margin-top: 6px;
+        font-size: 42px;
+        line-height: 1.24;
+        font-weight: 700;
+        color: var(--seal);
+        letter-spacing: -0.01em;
+      }
+
+      .receipt {
+        margin-top: 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 12px;
+      }
+      .receipt .row {
+        display: grid;
+        grid-template-columns: 230px 1fr;
+        font-size: 22px;
+        line-height: 1.5;
+        opacity: 0;
+      }
+      .receipt .k {
+        color: var(--faint);
+      }
+      .receipt .v {
+        color: var(--paper);
+      }
+
+      .board {
+        position: relative;
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        overflow: hidden;
+      }
+      .board-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 22px;
+        border-bottom: 1px solid var(--line);
+      }
+      .board-title {
+        font-size: 18px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .board-live {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 17px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--signal);
+      }
+      .lamp {
+        display: inline-block;
+        width: 46px;
+        text-align: center;
+      }
+      .tally {
+        display: flex;
+        border-bottom: 1px solid var(--line);
+      }
+      .tally .cell {
+        flex: 1 1 0;
+        padding: 20px 14px 22px;
+        border-right: 1px solid var(--line);
+      }
+      .tally .cell:last-child {
+        border-right: 0;
+      }
+      .t-label {
+        font-size: 16px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .t-value {
+        margin-top: 6px;
+        font-size: 46px;
+        line-height: 1;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.03em;
+        color: var(--paper);
+      }
+      .t-value.is-signal {
+        color: var(--signal);
+      }
+      .t-value.is-wait {
+        color: var(--wait);
+      }
+      .t-value.is-seal {
+        color: var(--seal);
+      }
+
+      .docket {
+        margin: 24px 22px 0;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        padding: 18px 20px 16px;
+      }
+      .docket-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .chip {
+        display: inline-block;
+        border: 1px solid currentColor;
+        padding: 4px 11px;
+        font-size: 17px;
+        letter-spacing: 0.16em;
+        color: var(--paper);
+      }
+      .chip[data-state="running"] {
+        color: var(--signal);
+      }
+      .chip[data-state="waiting"] {
+        color: var(--wait);
+      }
+      .chip[data-state="completed"] {
+        color: var(--seal);
+      }
+      .docket-id {
+        font-size: 18px;
+        color: var(--faint);
+      }
+      .docket-title {
+        margin-top: 14px;
+        font-size: 26px;
+        font-weight: 700;
+        color: var(--paper);
+      }
+      .docket-meta {
+        margin-top: 6px;
+        font-size: 17px;
+        color: var(--faint);
+      }
+
+      .feed {
+        margin-top: 26px;
+        padding: 0 22px 22px;
+      }
+      .feed-label {
+        font-size: 16px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .feed-row {
+        display: flex;
+        gap: 14px;
+        font-size: 17px;
+        line-height: 1.9;
+        opacity: 0;
+      }
+      .feed-row .t {
+        color: var(--line);
+        font-variant-numeric: tabular-nums;
+      }
+      .feed-row .id {
+        color: var(--faint);
+      }
+
+      /* ── Scene 3 — outro ────────────────────────────────────────────── */
+      .outro {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0;
+      }
+      #out-mark {
+        width: 232px;
+        height: auto;
+        opacity: 0;
+      }
+      #out-name {
+        margin-top: 26px;
+        font-size: 78px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        opacity: 0;
+      }
+      #out-install {
+        margin-top: 42px;
+        font-size: 26px;
+        white-space: pre;
+        color: var(--signal);
+        opacity: 1;
+      }
+      #out-badge {
+        margin-top: 30px;
+        font-size: 19px;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+        color: var(--faint);
+        opacity: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="taskbridge-brag"
+      data-start="0"
+      data-width="1920"
+      data-height="1080"
+      data-duration="20"
+    >
+      <div id="bg" aria-hidden="true"></div>
+      <div id="glow" aria-hidden="true"></div>
+      <div id="grain" aria-hidden="true"></div>
+
+      <!-- ══ Scene 1 — hook ══ -->
+      <section id="s1" class="clip" data-start="0" data-duration="3.01" data-track-index="1">
+        <div class="hero-wrap">
+          <p id="h-eyebrow" class="eyebrow">MCP task bridge / SQLite queue / Apache-2.0</p>
+          <h1 class="hero">
+            <span class="hero-line">
+              <svg id="mark-claude" class="mark mark-claude" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <path
+                  d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"
+                />
+              </svg>
+              <span class="typed" id="h1-text">Claude plans.</span>
+              <span class="cursor" id="c-h1"></span>
+            </span>
+            <span class="hero-line">
+              <svg id="mark-opencode" class="mark mark-opencode" viewBox="0 0 512 512" aria-hidden="true">
+                <path
+                  d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z"
+                  fill="currentColor"
+                  fill-rule="evenodd"
+                  clip-rule="evenodd"
+                />
+                <path d="M320 224V352H192V224H320Z" fill="currentColor" fill-opacity="0.45" />
+              </svg>
+              <span class="typed" id="h2-text">OpenCode builds.</span>
+              <span class="cursor" id="c-h2"></span>
+            </span>
+          </h1>
+          <div id="h-rule"></div>
+        </div>
+      </section>
+
+      <!-- ══ Scene 2 — one session: submit → question → answer → receipt ══ -->
+      <section id="s2" class="clip" data-start="3.01" data-duration="13.92" data-track-index="2">
+        <div class="stage">
+          <div class="console" id="console">
+            <div class="console-head">
+              <span class="console-title">taskbridge · mcp</span>
+              <span class="task-chip">t_0142</span>
+            </div>
+            <div class="console-body">
+              <div class="line"><span class="prompt">&gt;&#32;</span><span class="typed" id="l-submit-1">submit_task(title="Add retry tests",</span><span class="cursor" id="c-submit-1"></span></div>
+              <div class="line"><span class="typed" id="l-submit-2">  working_dir="~/code/target-repo")</span><span class="cursor" id="c-submit-2"></span></div>
+              <div class="line faint" id="l-return">&lt;- { id: "t_0142", status: "pending" }</div>
+              <div class="line faint" id="l-claimed">* claimed | branch + worktree created</div>
+              <div class="line faint" id="l-running">* opencode run | streaming task_logs/t_0142.log</div>
+              <div class="line wait" id="l-waiting">! waiting -- the worker has a question</div>
+              <div id="qbox">
+                <div class="qline" id="q1">  ┌ question ─────────────────────────────┐</div>
+                <div class="qline" id="q2">  │ Retries: keep the fixed delay, or     │</div>
+                <div class="qline" id="q3">  │ switch to exponential backoff?        │</div>
+                <div class="qline" id="q4">  └───────────────────────────────────────┘</div>
+              </div>
+              <div class="line"><span class="prompt">&gt;&#32;</span><span class="typed" id="l-answer">answer_task(task_id="t_0142", answer="Keep the fixed delay.")</span><span class="cursor" id="c-answer"></span></div>
+              <div class="line faint" id="l-resumed">* resumed with the answer in context</div>
+              <div id="l-done">+ done</div>
+              <div class="receipt" id="receipt">
+                <div class="row" id="r1"><span class="k">summary</span><span class="v">Added retry tests for task_store</span></div>
+                <div class="row" id="r2"><span class="k">files_touched</span><span class="v">tests/test_retries.py</span></div>
+                <div class="row" id="r3"><span class="k">tests_run</span><span class="v">pytest -q · 14 passed</span></div>
+                <div class="row" id="r4"><span class="k">diff</span><span class="v signal">tests/test_retries.py +48 -0</span></div>
+              </div>
+            </div>
+          </div>
+
+          <aside class="board" id="board">
+            <div class="board-head">
+              <span class="board-title">┌ dispatch board</span>
+              <span class="board-live"><span class="lamp" id="lamp">*</span>worker online</span>
+            </div>
+            <div class="tally">
+              <div class="cell">
+                <div class="t-label">running</div>
+                <div class="t-value" id="t-running">0</div>
+              </div>
+              <div class="cell">
+                <div class="t-label">pending</div>
+                <div class="t-value" id="t-pending">0</div>
+              </div>
+              <div class="cell">
+                <div class="t-label">waiting</div>
+                <div class="t-value" id="t-waiting">0</div>
+              </div>
+              <div class="cell">
+                <div class="t-label">filed</div>
+                <div class="t-value" id="t-filed">29</div>
+              </div>
+            </div>
+            <div class="docket" id="docket">
+              <div class="docket-top">
+                <span class="chip" id="chip" data-state="pending">PENDING</span>
+                <span class="docket-id">t_0142</span>
+              </div>
+              <div class="docket-title">Add retry tests</div>
+              <div class="docket-meta">t_0142 · attempt 1</div>
+            </div>
+            <div class="feed">
+              <div class="feed-label">fresh output</div>
+              <div class="feed-row" id="f1"><span class="t">05:49:12</span><span class="id">t_0140</span><span class="faint">edit src/task_store.py</span></div>
+              <div class="feed-row" id="f2"><span class="t">05:49:16</span><span class="id">t_0142</span><span class="wait">waiting | question posted</span></div>
+              <div class="feed-row" id="f3"><span class="t">05:49:20</span><span class="id">t_0138</span><span class="seal">done | diff +12 -3</span></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ══ Scene 3 — outro ══ -->
+      <section id="s3" class="clip" data-start="16.93" data-duration="3.07" data-track-index="3">
+        <div class="outro">
+          <img id="out-mark" src="assets/img/logo-mark-cream.png" alt="TaskBridge" width="232" height="129" />
+          <div id="out-name">TaskBridge</div>
+          <div id="out-install">&gt;&#32;<span class="typed" id="l-install">curl -fsSL https://taskbridge-landing.pages.dev/install | bash</span><span class="cursor" id="c-install"></span></div>
+          <div id="out-badge">apache&#8209;2.0</div>
+        </div>
+      </section>
+
+      <div id="blackout" aria-hidden="true"></div>
+
+      <!-- ══ Audio ══ -->
+      <audio
+        id="music"
+        data-start="0"
+        data-duration="20"
+        data-track-index="10"
+        data-volume="1"
+        data-automation='{"version":1,"lanes":[{"target":"volume","points":[{"t":0,"v":0},{"t":0.6,"v":0.30},{"t":7.9,"v":0.30},{"t":8.2,"v":0.22},{"t":10.2,"v":0.22},{"t":10.5,"v":0.30},{"t":18.7,"v":0.30},{"t":20,"v":0}]}]}'
+        src="assets/music/happy-beats-business-moves-vol-10-by-ende-dot-app.mp3"
+      ></audio>
+
+      <audio id="s-kp01" data-start="0.45" data-track-index="11" data-volume="0.42" src="assets/sfx/keyboard/keypress-001.wav"></audio>
+      <audio id="s-kp02" data-start="0.75" data-track-index="12" data-volume="0.38" src="assets/sfx/keyboard/keypress-002.wav"></audio>
+      <audio id="s-kp03" data-start="1.05" data-track-index="13" data-volume="0.40" src="assets/sfx/keyboard/keypress-003.wav"></audio>
+      <audio id="s-kp04" data-start="1.42" data-track-index="14" data-volume="0.40" src="assets/sfx/keyboard/keypress-004.wav"></audio>
+      <audio id="s-kp05" data-start="1.68" data-track-index="15" data-volume="0.36" src="assets/sfx/keyboard/keypress-005.wav"></audio>
+      <audio id="s-kp06" data-start="1.94" data-track-index="16" data-volume="0.40" src="assets/sfx/keyboard/keypress-006.wav"></audio>
+      <audio id="s-kp07" data-start="2.20" data-track-index="17" data-volume="0.38" src="assets/sfx/keyboard/keypress-001.wav"></audio>
+      <audio id="s-imp1" data-start="2.46" data-track-index="18" data-volume="0.55" src="assets/sfx/impact/impactSoft_medium_000.ogg"></audio>
+      <audio id="s-drop1" data-start="3.06" data-track-index="19" data-volume="0.50" src="assets/sfx/interface/drop_002.ogg"></audio>
+      <audio id="s-kp08" data-start="3.50" data-track-index="20" data-volume="0.40" src="assets/sfx/keyboard/keypress-002.wav"></audio>
+      <audio id="s-kp09" data-start="3.75" data-track-index="21" data-volume="0.42" src="assets/sfx/keyboard/keypress-003.wav"></audio>
+      <audio id="s-kp10" data-start="4.00" data-track-index="22" data-volume="0.38" src="assets/sfx/keyboard/keypress-004.wav"></audio>
+      <audio id="s-kp11" data-start="4.45" data-track-index="23" data-volume="0.40" src="assets/sfx/keyboard/keypress-005.wav"></audio>
+      <audio id="s-kp12" data-start="4.70" data-track-index="24" data-volume="0.42" src="assets/sfx/keyboard/keypress-006.wav"></audio>
+      <audio id="s-kp13" data-start="4.95" data-track-index="25" data-volume="0.38" src="assets/sfx/keyboard/keypress-001.wav"></audio>
+      <audio id="s-drop2" data-start="5.19" data-track-index="26" data-volume="0.48" src="assets/sfx/interface/drop_001.ogg"></audio>
+      <audio id="s-click1" data-start="5.56" data-track-index="27" data-volume="0.44" src="assets/sfx/interface/click_001.ogg"></audio>
+      <audio id="s-drop3" data-start="6.40" data-track-index="28" data-volume="0.46" src="assets/sfx/interface/drop_003.ogg"></audio>
+      <audio id="s-sw1" data-start="6.44" data-track-index="29" data-volume="0.42" src="assets/sfx/interface/switch_001.ogg"></audio>
+      <audio id="s-imp2" data-start="6.90" data-track-index="30" data-volume="0.44" src="assets/sfx/impact/impactGeneric_light_000.ogg"></audio>
+      <audio id="s-sw2" data-start="7.35" data-track-index="31" data-volume="0.52" src="assets/sfx/interface/switch_004.ogg"></audio>
+      <audio id="s-click2" data-start="7.46" data-track-index="32" data-volume="0.44" src="assets/sfx/interface/click_002.ogg"></audio>
+      <audio id="s-imp3" data-start="7.79" data-track-index="33" data-volume="0.60" src="assets/sfx/impact/impactSoft_medium_001.ogg"></audio>
+      <audio id="s-kp14" data-start="10.50" data-track-index="34" data-volume="0.40" src="assets/sfx/keyboard/keypress-003.wav"></audio>
+      <audio id="s-sw3" data-start="10.53" data-track-index="35" data-volume="0.40" src="assets/sfx/interface/switch_001.ogg"></audio>
+      <audio id="s-kp15" data-start="10.80" data-track-index="36" data-volume="0.42" src="assets/sfx/keyboard/keypress-004.wav"></audio>
+      <audio id="s-kp16" data-start="11.10" data-track-index="37" data-volume="0.38" src="assets/sfx/keyboard/keypress-005.wav"></audio>
+      <audio id="s-kp17" data-start="11.40" data-track-index="38" data-volume="0.40" src="assets/sfx/keyboard/keypress-006.wav"></audio>
+      <audio id="s-drop4" data-start="11.86" data-track-index="39" data-volume="0.42" src="assets/sfx/interface/drop_002.ogg"></audio>
+      <audio id="s-bell" data-start="12.56" data-track-index="40" data-volume="0.70" src="assets/sfx/impact/impactBell_heavy_000.ogg"></audio>
+      <audio id="s-sw4" data-start="12.72" data-track-index="41" data-volume="0.48" src="assets/sfx/interface/switch_001.ogg"></audio>
+      <audio id="s-click3" data-start="12.76" data-track-index="42" data-volume="0.40" src="assets/sfx/interface/click_001.ogg"></audio>
+      <audio id="s-chip1" data-start="12.85" data-track-index="43" data-volume="0.50" src="assets/sfx/casino/chips-stack-1.ogg"></audio>
+      <audio id="s-drop5" data-start="13.11" data-track-index="44" data-volume="0.44" src="assets/sfx/interface/drop_001.ogg"></audio>
+      <audio id="s-drop6" data-start="13.64" data-track-index="45" data-volume="0.44" src="assets/sfx/interface/drop_002.ogg"></audio>
+      <audio id="s-drop7" data-start="14.20" data-track-index="46" data-volume="0.44" src="assets/sfx/interface/drop_003.ogg"></audio>
+      <audio id="s-imp4" data-start="14.73" data-track-index="47" data-volume="0.40" src="assets/sfx/impact/impactGeneric_light_002.ogg"></audio>
+      <audio id="s-chip2" data-start="14.85" data-track-index="48" data-volume="0.42" src="assets/sfx/casino/chip-lay-1.ogg"></audio>
+      <audio id="s-imp5" data-start="17.12" data-track-index="49" data-volume="0.55" src="assets/sfx/impact/impactSoft_medium_003.ogg"></audio>
+      <audio id="s-kp18" data-start="17.70" data-track-index="50" data-volume="0.40" src="assets/sfx/keyboard/keypress-001.wav"></audio>
+      <audio id="s-kp19" data-start="18.00" data-track-index="51" data-volume="0.42" src="assets/sfx/keyboard/keypress-002.wav"></audio>
+      <audio id="s-kp20" data-start="18.30" data-track-index="52" data-volume="0.40" src="assets/sfx/keyboard/keypress-003.wav"></audio>
+      <audio id="s-drop8" data-start="18.57" data-track-index="53" data-volume="0.38" src="assets/sfx/interface/drop_001.ogg"></audio>
+    </div>
+
+    <script>
+      /* ─── deterministic typing + live board state ───────────────────────
+         All time-varying text state is a pure function of timeline time, so
+         any seek (forward or backward) reproduces the same frame. */
+      var AUDIO = null;
+      try {
+        var xhr = new XMLHttpRequest();
+        xhr.open("GET", "assets/audio-data.json", false); // synchronous on purpose
+        xhr.send();
+        AUDIO = JSON.parse(xhr.responseText);
+      } catch (err) {
+        AUDIO = null;
+      }
+
+      var TYPED = [
+        { sel: "#h1-text", text: "Claude plans.", t0: 0.45, cps: 15, cursor: "#c-h1", until: 1.52 },
+        { sel: "#h2-text", text: "OpenCode builds.", t0: 1.42, cps: 15.4, cursor: "#c-h2", until: 3.01 },
+        { sel: "#l-submit-1", text: 'submit_task(title="Add retry tests",', t0: 3.45, cps: 42, cursor: "#c-submit-1", until: 4.5 },
+        { sel: "#l-submit-2", text: '  working_dir="~/code/target-repo")', t0: 4.4, cps: 42, cursor: "#c-submit-2", until: 5.3 },
+        { sel: "#l-answer", text: 'answer_task(task_id="t_0142", answer="Keep the fixed delay.")', t0: 10.45, cps: 42, cursor: "#c-answer", until: 11.95 },
+        { sel: "#l-install", text: "curl -fsSL https://taskbridge-landing.pages.dev/install | bash", t0: 17.65, cps: 66, cursor: "#c-install", until: 19.05 },
+      ];
+
+      var typedEls = TYPED.map(function (e) {
+        return { e: e, el: document.querySelector(e.sel), cur: document.querySelector(e.cursor) };
+      });
+
+      var elRunning = document.getElementById("t-running");
+      var elPending = document.getElementById("t-pending");
+      var elWaiting = document.getElementById("t-waiting");
+      var elFiled = document.getElementById("t-filed");
+      var elChip = document.getElementById("chip");
+      var elGlow = document.getElementById("glow");
+      var elLamp = document.getElementById("lamp");
+      var elConsole = document.getElementById("console");
+
+      var chipState = "";
+
+      function renderFrame(t) {
+        // typed lines
+        for (var i = 0; i < typedEls.length; i++) {
+          var s = typedEls[i];
+          var e = s.e;
+          var n = t < e.t0 ? 0 : Math.min(e.text.length, Math.floor((t - e.t0) * e.cps));
+          var next = e.text.slice(0, n);
+          if (s.el.textContent !== next) s.el.textContent = next;
+          var typing = t >= e.t0 && n < e.text.length;
+          var visible = t >= e.t0 && t <= e.until;
+          var on = typing ? 1 : Math.floor(t * 1.6) % 2 === 0 ? 1 : 0;
+          s.cur.style.opacity = visible ? String(on) : "0";
+        }
+
+        // dispatch board — the same session, mirrored as queue state
+        var pending = t >= 3.01 && t < 6.4 ? 1 : 0;
+        var running = (t >= 6.4 && t < 7.35) || (t >= 10.5 && t < 12.56) ? 1 : 0;
+        var waiting = t >= 7.35 && t < 10.5 ? 1 : 0;
+        var filed = t < 12.85 ? 29 : 30;
+
+        elPending.textContent = String(pending);
+        elRunning.textContent = String(running);
+        elWaiting.textContent = String(waiting);
+        elFiled.textContent = String(filed);
+        elRunning.className = "t-value" + (running ? " is-signal" : "");
+        elWaiting.className = "t-value" + (waiting ? " is-wait" : "");
+        elFiled.className = "t-value" + (t >= 12.85 ? " is-seal" : "");
+
+        var state = "pending";
+        var label = "PENDING";
+        if (t >= 6.4) {
+          state = "running";
+          label = "RUNNING";
+        }
+        if (t >= 7.35) {
+          state = "waiting";
+          label = "WAITING";
+        }
+        if (t >= 10.5) {
+          state = "running";
+          label = "RUNNING";
+        }
+        if (t >= 12.72) {
+          state = "completed";
+          label = "COMPLETED";
+        }
+        if (state !== chipState) {
+          chipState = state;
+          elChip.setAttribute("data-state", state);
+          elChip.textContent = label;
+        }
+
+        // audio-reactive warmth: bass swells the ground glow, RMS sharpens the lamp
+        if (AUDIO && AUDIO.frames && AUDIO.frames.length) {
+          var idx = Math.round(t * AUDIO.fps);
+          if (idx < 0) idx = 0;
+          if (idx > AUDIO.frames.length - 1) idx = AUDIO.frames.length - 1;
+          var f = AUDIO.frames[idx];
+          var bass = f.bands[0];
+          var rms = f.rms;
+          elGlow.style.opacity = (0.04 + bass * 0.14).toFixed(3);
+          elLamp.style.textShadow = "0 0 " + (4 + rms * 12).toFixed(1) + "px rgba(242,160,7,0.75)";
+          elConsole.style.boxShadow =
+            "0 0 " + (14 + bass * 30).toFixed(0) + "px rgba(226,96,58," + (0.03 + bass * 0.07).toFixed(3) + ")";
+        }
+      }
+
+      var TL = gsap.timeline({ paused: true });
+
+      function reveal(sel, start, dur, dy) {
+        TL.fromTo(
+          sel,
+          { opacity: 0, y: typeof dy === "number" ? dy : 14 },
+          { opacity: 1, y: 0, duration: typeof dur === "number" ? dur : 0.36, ease: "power3.out" },
+          start,
+        );
+      }
+
+      /* Scene 1 — hook */
+      reveal("#h-eyebrow", 0.15, 0.45, 10);
+      reveal("#mark-claude", 0.45, 0.32, 8);
+      reveal("#mark-opencode", 1.42, 0.32, 8);
+      TL.fromTo("#h-rule", { scaleX: 0, opacity: 0 }, { scaleX: 1, opacity: 1, duration: 0.5, ease: "power3.out" }, 2.46);
+
+      /* Scene 2 — console enters, then the session runs */
+      reveal("#console", 3.02, 0.5, 18);
+      reveal("#board", 3.16, 0.5, 18);
+      reveal("#l-return", 5.19, 0.22, 6);
+      reveal("#docket", 5.5, 0.4, 10);
+      TL.fromTo("#chip", { scale: 1.09 }, { scale: 1, duration: 0.3, ease: "power2.out" }, 5.56);
+      reveal("#f1", 3.9, 0.3, 6);
+      reveal("#l-claimed", 6.4, 0.2, 6);
+      reveal("#l-running", 6.9, 0.2, 6);
+      TL.fromTo("#chip", { scale: 1.09 }, { scale: 1, duration: 0.3, ease: "power2.out" }, 6.44);
+
+      /* The question — the only pause in the video */
+      reveal("#l-waiting", 7.35, 0.24, 6);
+      TL.to(["#l-submit-1", "#l-submit-2", "#l-return", "#l-claimed", "#l-running"], { opacity: 0.45, duration: 0.4, ease: "sine.out" }, 7.44);
+      reveal("#f2", 7.46, 0.3, 6);
+      TL.fromTo("#chip", { scale: 1.09 }, { scale: 1, duration: 0.3, ease: "power2.out" }, 7.37);
+      reveal("#q1", 7.79, 0.18, 4);
+      reveal("#q2", 7.9, 0.18, 4);
+      reveal("#q3", 8.01, 0.18, 4);
+      reveal("#q4", 8.12, 0.18, 4);
+      TL.fromTo("#l-waiting", { opacity: 0.35 }, { opacity: 1, duration: 0.28, ease: "sine.out" }, 7.79);
+
+      /* Answer, resume */
+      TL.fromTo("#chip", { scale: 1.09 }, { scale: 1, duration: 0.3, ease: "power2.out" }, 10.52);
+      reveal("#l-resumed", 11.86, 0.22, 6);
+      TL.to("#qbox", { opacity: 0.6, duration: 0.4, ease: "sine.out" }, 11.9);
+
+      /* Receipt */
+      reveal("#l-done", 12.56, 0.3, 8);
+      TL.fromTo("#chip", { scale: 1.12 }, { scale: 1, duration: 0.34, ease: "power2.out" }, 12.74);
+      reveal("#f3", 12.76, 0.3, 6);
+      TL.fromTo("#t-filed", { opacity: 0.35 }, { opacity: 1, duration: 0.4, ease: "power2.out" }, 12.85);
+      reveal("#r1", 13.11, 0.22, 8);
+      reveal("#r2", 13.64, 0.22, 8);
+      reveal("#r3", 14.2, 0.22, 8);
+      reveal("#r4", 14.73, 0.22, 8);
+
+      /* Soft crossfade into the outro */
+      TL.to(["#console", "#board"], { opacity: 0, duration: 0.36, ease: "sine.inOut" }, 16.55);
+
+      /* Scene 3 — outro */
+      TL.fromTo("#out-mark", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.62, ease: "power3.out" }, 17.05);
+      reveal("#out-name", 17.55, 0.5, 14);
+      reveal("#out-badge", 18.9, 0.45, 8);
+      TL.fromTo("#blackout", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "sine.in" }, 19.55);
+
+      /* One driver keeps every derived value a pure function of timeline time. */
+      var driver = { p: 0 };
+      TL.to(
+        driver,
+        {
+          p: 1,
+          duration: 20,
+          ease: "none",
+          onUpdate: function () {
+            renderFrame(TL.time());
+          },
+        },
+        0,
+      );
+
+      renderFrame(0);
+      window.__timelines["taskbridge-brag"] = TL;
+    </script>
+  </body>
+</html>

@@ -1,0 +1,32 @@
+#!/bin/bash
+# TaskBridge — one-line installer.
+#
+#   curl -fsSL https://taskbridge-landing.pages.dev/install | bash
+#   curl -fsSL https://taskbridge-landing.pages.dev/install | bash -s -- --rotate
+#
+# Clones (or updates) the repo, then hands over to ./install.sh.
+# Overrides: TASKBRIDGE_DIR (install location, default ./TaskBridge), TASKBRIDGE_REPO.
+set -euo pipefail
+
+REPO_URL="${TASKBRIDGE_REPO:-https://github.com/Parithosh-Varma/TaskBridge.git}"
+INSTALL_DIR="${TASKBRIDGE_DIR:-$PWD/TaskBridge}"
+
+echo "========================================="
+echo "           TaskBridge installer"
+echo "========================================="
+
+command -v git >/dev/null 2>&1 || { echo "⚠️ git is required — install it and re-run." >&2; exit 1; }
+
+if [ -d "$INSTALL_DIR/.git" ]; then
+  echo "↻ Updating existing checkout at $INSTALL_DIR"
+  git -C "$INSTALL_DIR" pull --ff-only
+elif [ -e "$INSTALL_DIR" ]; then
+  echo "⚠️ $INSTALL_DIR exists and is not a git checkout — move it aside or set TASKBRIDGE_DIR." >&2
+  exit 1
+else
+  echo "📦 Cloning TaskBridge into $INSTALL_DIR"
+  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+fi
+
+cd "$INSTALL_DIR"
+exec bash ./install.sh "$@"

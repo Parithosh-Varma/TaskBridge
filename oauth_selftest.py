@@ -175,8 +175,16 @@ def main() -> int:
         "scope": "mcp:tools", "state": "st-123", "resource": f"{BASE}/mcp",
         "code_challenge": challenge, "code_challenge_method": "S256",
     })
-    status, _, page = http("GET", f"{as_url}/authorize?{qs}")
+    status, hdrs, page = http("GET", f"{as_url}/authorize?{qs}")
     check("consent page renders", status == 200 and "this was me" in str(page), f"{status}")
+    # Chrome enforces form-action across the post-approval redirect; if the CSP
+    # only says 'self', the browser silently refuses to land on the callback
+    # (chromium issue 393431137) — approve then "does nothing". HTTP-only
+    # clients can't catch that, so assert the header itself.
+    csp = next((v for k, v in hdrs.items() if k.lower() == "content-security-policy"), "")
+    cb_origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(CALLBACK))
+    check("consent CSP allows the post-approval redirect origin",
+          cb_origin in str(csp), f"csp={csp!r}")
 
     # 6. approve with the access code -> one-time code
     authz_code = get_code(BASE, client_id, challenge, SECRET)
@@ -288,7 +296,7 @@ def main() -> int:
                         data={"client_id": client_id, "consent_secret": "nope"}, form=True)
     check("revoke needs consent secret", status == 403 or status == 429, f"got {status}")
 
-    # 11. static token backward compat; open routes stay open
+    # 12. static token backward compat; open routes stay open
     status, _, _ = http("GET", f"{BASE}/api/overview",
                         headers={"Authorization": f"Bearer {STATIC}"})
     check("static bridge token still accepted", status == 200, f"got {status}")

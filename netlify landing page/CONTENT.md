@@ -17,3 +17,4 @@ Source: `README.md` of github.com/Parithosh-Varma/TaskBridge. Every claim on the
 13. Numbers allowed: 16, 20, 6, 60 s, ~30 s average pickup, 1800 s, 15 min, 900 s / +120 s, Python 3.12.
 14. Not used: testimonials, logos, metrics, superlatives, emoji. Nothing beyond the README is claimed.
 15. Illustrative content (demo task names, ids, diff counts) is labelled as such on the page.
+16. Screenshots — real captures of a live dispatch board (`bridge_dashboard.html` served at `GET /`), not illustrative. They show genuine task data from a running instance and are visual proof, not new claims.

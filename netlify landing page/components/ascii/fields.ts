@@ -10,8 +10,9 @@ const G_DOWN = glyphIndex("╲");
 const G_UP = glyphIndex("╱");
 const G_LANE = glyphIndex("─");
 const G_PACKET = glyphIndex("━");
-const G_DOT = glyphIndex("·");
-const G_HEAD = glyphIndex("▸");
+const G_DOT = glyphIndex(".");
+const G_HEAD = glyphIndex(">");
+const G_RULE = glyphIndex("─");
 
 function channelWidth(
   u: number,
@@ -171,4 +172,37 @@ export const calmField: AsciiField = (i, o) => {
   const n = fbm(u * 9 + t * 0.05, vn * 2 - t * 0.04, 2);
   o.b = Math.max(0, n - 0.6) * 1.1 * mask;
   o.tone = 0.25 + u * 0.7;
+};
+
+/**
+ * Graph paper: a faint dot lattice with a slow scan band sweeping down it and a
+ * handful of dots breathing on their own. Dim and centre-shy, so type stays legible.
+ */
+export const gridField: AsciiField = (i, o) => {
+  const { u, vn, t, x, y } = i;
+  if (x % 3 !== 0 || y % 3 !== 0) return;
+  const sweepVn = ((t * 0.05) % 1.5) - 0.75;
+  const sweep = Math.max(0, 1 - Math.abs(vn - sweepVn) * 7);
+  const flicker = noise2(x * 0.31 - t * 0.09, y * 0.43 + t * 0.06);
+  o.b = 0.09 + sweep * 0.26 + (flicker > 0.84 ? 0.13 : 0);
+  o.b *= 0.55 + 0.45 * smoothstep(0.2, 0.9, Math.abs(vn));
+  o.tone = 0.3 + u * 0.55 + sweep * 0.1;
+};
+
+/** Teletype margins: grain and torn ─ rules hug the edges; the centre stays clear. */
+export const marginField: AsciiField = (i, o) => {
+  const { u, t, y } = i;
+  const edge = Math.max(smoothstep(0.16, 0.03, u), smoothstep(0.84, 0.97, u));
+  if (edge <= 0) return;
+  const n = noise2(i.x * 0.7 + t * 0.08, i.y * 0.8 - t * 0.05);
+  o.b = Math.max(0, n - 0.52) * 0.9 * edge;
+  o.tone = 0.25 + u * 0.6;
+  if (y % 5 === 2) {
+    const ph = fract(u * 0.6 - t * 0.03 + y * 0.13);
+    if (ph < 0.5 && edge > 0.35) {
+      o.glyph = G_RULE;
+      o.b = 0.2 * edge;
+      o.tone = 0.45 + u * 0.45;
+    }
+  }
 };

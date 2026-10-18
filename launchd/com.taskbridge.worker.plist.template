@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TaskBridge worker LaunchAgent (template).
+
+  install_worker_agent.sh fills in __PYTHON__ / __REPO_DIR__ and copies this
+  file to ~/Library/LaunchAgents/com.taskbridge.worker.plist. To verify which
+  label and paths are actually installed:
+
+      launchctl print gui/$(id -u)/com.taskbridge.worker | head -20
+
+  Do not run the worker from two supervisors at once (e.g. this agent plus a
+  manual `while true; do worker.py; sleep 60; done`): worker.py's flock guard
+  makes passes skip, but the queue cadence gets confusing.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.taskbridge.worker</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON__</string>
+    <string>__REPO_DIR__/worker.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_DIR__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>__HOME__/.opencode/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- Optional: pin the opencode binary for launchd (no shell PATH there). -->
+    <key>OPENCODE_BIN</key>
+    <string>__HOME__/.opencode/bin/opencode</string>
+  </dict>
+
+  <!-- One pass per invocation; the worker exits when the queue is empty. -->
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__REPO_DIR__/worker.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>__REPO_DIR__/worker.launchd.log</string>
+</dict>
+</plist>

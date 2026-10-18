@@ -8,6 +8,8 @@ Usage:
   ./tasks_cli.py claim <id> [--worker opencode]
   ./tasks_cli.py complete <id> --result "..."        # or --result-file out.txt
   ./tasks_cli.py fail <id> --error "..."
+  ./tasks_cli.py restart-worker [--force] [--timeout 90]   # via launchd
+  ./tasks_cli.py supervisor-status
 """
 from __future__ import annotations
 import argparse
@@ -60,6 +62,16 @@ def main() -> int:
 
     sub.add_parser("heartbeat", help="show worker heartbeat file")
 
+    rw = sub.add_parser("restart-worker",
+                        help="restart the worker via launchd (skips if healthy)")
+    rw.add_argument("--force", action="store_true",
+                    help="restart even when the worker is healthy")
+    rw.add_argument("--timeout", type=int, default=None,
+                    help="seconds to wait for a verified recovery (10-600)")
+
+    sub.add_parser("supervisor-status",
+                   help="launchd service + heartbeat + queue snapshot")
+
     ap = sub.add_parser("answer", help="answer a waiting task's question (requeues it)")
     ap.add_argument("id")
     ap.add_argument("--answer", required=True)
@@ -95,6 +107,16 @@ def main() -> int:
             from pathlib import Path
             p = Path(__file__).parent / "heartbeat.json"
             print(p.read_text() if p.exists() else "(no heartbeat yet)")
+        elif args.cmd == "supervisor-status":
+            import worker_supervisor
+            _print(worker_supervisor.default_supervisor().status())
+        elif args.cmd == "restart-worker":
+            import worker_supervisor
+            res = worker_supervisor.restart_worker(force=args.force,
+                                                   timeout_sec=args.timeout)
+            _print(res)
+            if not res.get("success"):
+                return 1
         elif args.cmd == "answer":
             _print(task_store.answer_task(args.id, args.answer, author="opencode"))
     except (KeyError, ValueError, RuntimeError) as e:

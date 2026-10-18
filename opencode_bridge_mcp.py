@@ -15,6 +15,7 @@ OpenCode (this agent) flow — via shell, not MCP:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import hmac
 import json
@@ -37,6 +38,7 @@ import oauth_service
 
 HERE = Path(__file__).parent
 DASHBOARD_PATH = HERE / "bridge_dashboard.html"
+FAVICON_PATH = HERE / "logo-icon-256.png"
 CLAUDE_JOBS_DIR = HERE / "claude_jobs"
 TOKEN_FILE = HERE / ".bridge-token"
 
@@ -64,6 +66,7 @@ def _auth_middleware(app: ASGIApp) -> ASGIApp:
     (oauth_service.verify_bearer). Requires a token for all routes except:
     - /health (open for monitoring)
     - / (dashboard page, serves HTML)
+    - /favicon.ico (browser icon probe)
     - /.well-known/* (RFC 9728 / RFC 8414 discovery documents)
     - /register, /authorize, /token, /revoke (MCP authorization endpoints;
       /revoke is gated on the consent secret, and the human barrier for the
@@ -76,7 +79,7 @@ def _auth_middleware(app: ASGIApp) -> ASGIApp:
     """
     token = _load_auth_token()
 
-    open_paths = {"/", "/health", "/register", "/authorize", "/token", "/revoke"}
+    open_paths = {"/", "/health", "/favicon.ico", "/register", "/authorize", "/token", "/revoke"}
 
     def _origin(scope: Scope) -> str:
         headers = {k: v for k, v in scope.get("headers", [])}
@@ -252,7 +255,8 @@ def queue_status() -> dict:
     """Queue health: task counts by status plus the most recently active task.
 
     Use this to tell whether the OpenCode worker is picking tasks up —
-    if pending tasks pile up with no recent activity, the worker is offline.
+    if pending tasks pile up with no recent activity, the worker is offline
+    (recover it with restart_worker()).
     """
     return task_store.queue_status()
 
@@ -388,6 +392,8 @@ def worker_heartbeat(max_stale_sec: int = 180) -> dict:
     """Worker liveness: last poll time, version, active default model.
 
     alive=false means the launchd daemon hasn't checked in — tasks will pile up.
+    When it says offline/stale, restart the worker with restart_worker() (it
+    runs from this server, so it works while the worker is down).
     """
     import datetime as _dt
     hb_path = worker_mod.HEARTBEAT_PATH
@@ -407,6 +413,47 @@ def worker_heartbeat(max_stale_sec: int = 180) -> dict:
     out["age_sec"] = int(age)
     out["alive"] = age <= max(30, int(max_stale_sec or 180))
     return out
+
+
+@mcp.tool()
+async def restart_worker(force: bool = False, timeout_sec: int = 90) -> dict:
+    """Restart the OpenCode worker through its process supervisor (launchd).
+
+    Use this when worker_heartbeat() shows the worker offline/stale, or when
+    queue_status() shows pending tasks piling up. The restart runs from the MCP
+    server itself (not from the worker), so it works while the worker is dead.
+
+    Args:
+        force: false (default) never interrupts a healthy worker — the call is
+            skipped and reported as skipped_healthy. true restarts even a healthy
+            worker; an active task may be interrupted (queued tasks are kept).
+        timeout_sec: How long to wait for a verified recovery (10-600, default 90).
+            Success requires a heartbeat newer than the restart attempt.
+
+    Returns a structured result: success, previous_status (healthy|stale|offline),
+    restart_attempted, restart_method, service_label, heartbeat_before/after,
+    worker_pid, elapsed_ms, error, next_steps, plus outcome and queue evidence.
+    """
+    import asyncio
+    import worker_supervisor
+
+    sup = worker_supervisor.default_supervisor()
+    try:
+        result = await asyncio.to_thread(
+            sup.restart, force=bool(force), timeout_sec=int(timeout_sec or 90))
+    except Exception as e:  # never surface a raw traceback to an MCP client
+        return {
+            "success": False, "previous_status": "unknown",
+            "restart_attempted": False, "restart_method": "none",
+            "service_label": None, "heartbeat_before": None,
+            "heartbeat_after": None, "worker_pid": None, "elapsed_ms": 0,
+            "error": f"{type(e).__name__}: {e}"[:300],
+            "next_steps": ["Unexpected supervisor error — inspect mcp_http.log / "
+                           "restart.log, then retry."],
+        }
+    print(f"restart_worker(force={bool(force)}) -> {result.get('outcome')} "
+          f"({result.get('elapsed_ms')}ms)", flush=True)
+    return result
 
 
 @mcp.tool()
@@ -585,9 +632,9 @@ def _read_chunk(path: Path, offset: int, max_chars: int) -> tuple[str, int, int]
 
 
 def _dashboard_headers(script_nonce: str | None) -> dict[str, str]:
-    """Hardening headers for the board. The page is a single inline script, so
-    when we managed to pin it with a nonce the CSP locks script-src down;
-    otherwise we still ship the frame/mime/referrer restrictions."""
+    """Hardening headers for the board. The page is inline-script only, so
+    when we managed to pin every script with a nonce the CSP locks script-src
+    down; otherwise we still ship the frame/mime/referrer restrictions."""
     csp = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; "
            "connect-src 'self'; base-uri 'none'; form-action 'self'; "
            "frame-ancestors 'none'")
@@ -607,15 +654,28 @@ async def dashboard_page(request: Request) -> HTMLResponse:
         html = DASHBOARD_PATH.read_text()
     except OSError:
         html = "<h1>Bridge Live</h1><p>dashboard file missing.</p>"
-    # Pin the one inline <script> with a per-request CSP nonce; if the html
-    # shape ever drifts, degrade gracefully instead of breaking the board.
+    # Pin every inline <script> with a per-request CSP nonce; if the html shape
+    # ever drifts (e.g. no script at all), degrade gracefully instead of
+    # breaking the board.
     nonce = secrets.token_urlsafe(16)
-    tagged, n = re.subn(r"<script>", '<script nonce="%s">' % nonce, html, count=1)
-    if n == 1:
+    tagged, n = re.subn(r"<script>", '<script nonce="%s">' % nonce, html)
+    if n:
         html = tagged
     else:
         nonce = None
     return HTMLResponse(html, headers=_dashboard_headers(nonce))
+
+
+@mcp.custom_route("/favicon.ico", methods=["GET"])
+async def favicon(request: Request) -> Response:
+    # Browsers probe /favicon.ico on every page load; without this route the
+    # auth gate answers 401 and the console fills with noise.
+    try:
+        icon = FAVICON_PATH.read_bytes()
+    except OSError:
+        return Response(status_code=204)
+    return Response(icon, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @mcp.custom_route("/health", methods=["GET"])
@@ -761,6 +821,88 @@ async def api_claude_job(request: Request) -> JSONResponse:
                          "backend": job.get("backend", ""),
                          "output_tail": tail},
                         headers={"Cache-Control": "no-store"})
+
+
+# ---------------- worker default model (dashboard) ----------------
+
+# `opencode models` shells out and reports 600+ entries, so cache the full
+# uncapped list and serve the picker (search + slice) from memory;
+# ?refresh=1 forces a new listing.
+_MODELS_CACHE: dict = {"ts": 0.0, "models": []}
+_MODELS_TTL_SEC = 300
+
+
+@mcp.custom_route("/api/models", methods=["GET"])
+async def api_models(request: Request) -> JSONResponse:
+    """List models the worker can run (dashboard model picker).
+
+    Search runs against the full list; `limit` only caps the response rows.
+    """
+    search = (request.query_params.get("search") or "").strip()[:80]
+    try:
+        limit = max(1, min(int(request.query_params.get("limit", "200")), 200))
+    except ValueError:
+        limit = 200
+    stale = (not _MODELS_CACHE["models"]
+             or time.time() - float(_MODELS_CACHE["ts"]) > _MODELS_TTL_SEC)
+    if request.query_params.get("refresh") == "1" or stale:
+        try:
+            models = await asyncio.to_thread(worker_mod.all_opencode_models)
+        except (RuntimeError, OSError) as e:
+            return JSONResponse({"error": str(e)[:300]}, status_code=502)
+        _MODELS_CACHE["models"], _MODELS_CACHE["ts"] = models, time.time()
+    models = list(_MODELS_CACHE["models"])
+    if search:
+        models = [m for m in models if search.lower() in m.lower()]
+    return JSONResponse({
+        "models": models[:limit],
+        "count": len(models),
+        "worker_default": worker_mod.default_model(),
+    }, headers={"Cache-Control": "no-store"})
+
+
+@mcp.custom_route("/api/model", methods=["POST"])
+async def api_set_model(request: Request) -> JSONResponse:
+    """Set the worker's default model (persists to worker_config.json).
+
+    Auth-gated like every other /api/* route. The worker re-reads the file
+    each pass, so the change lands without touching a task in flight.
+    """
+    try:
+        raw = await request.body()
+    except Exception:
+        raw = b""
+    if len(raw) > 1024:
+        return JSONResponse({"error": "request body too large"}, status_code=413)
+    try:
+        payload = json.loads(raw or b"{}")
+    except ValueError:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    model = payload.get("model") if isinstance(payload, dict) else None
+    if model is not None and not isinstance(model, str):
+        return JSONResponse({"error": "model must be a string"}, status_code=400)
+    model = (model or "").strip()
+    # same argv-safety shape the worker enforces on per-task models
+    if not task_store._MODEL_ID.fullmatch(model):
+        return JSONResponse(
+            {"error": "model must look like 'provider/model' "
+                      "(letters, digits, . _ / : - only)"},
+            status_code=400)
+    try:
+        chosen = await asyncio.to_thread(worker_mod.set_default_model, model)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)[:300]}, status_code=400)
+    except (RuntimeError, OSError) as e:
+        return JSONResponse({"error": str(e)[:300]}, status_code=502)
+    if chosen not in _MODELS_CACHE["models"]:
+        _MODELS_CACHE["models"] = list(_MODELS_CACHE["models"]) + [chosen]
+    print(f"dashboard: worker default model set to {chosen}", flush=True)
+    return JSONResponse({
+        "ok": True,
+        "worker_default": chosen,
+        "note": "Applies on the worker's next pass (within ~60s) and to every "
+                "task without its own model.",
+    }, headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":

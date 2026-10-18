@@ -1,6 +1,8 @@
 "use client";
 
 import { motion } from "motion/react";
+import { AsciiTexture } from "@/components/ascii/AsciiTexture";
+import { AsciiRule } from "@/components/ui/AsciiRule";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { EASE_OUT } from "@/components/ui/Reveal";
 import { FEATURES } from "@/lib/content";
@@ -10,7 +12,9 @@ export function Features() {
   const reduced = usePrefersReducedMotion();
 
   return (
-    <section id="features" aria-labelledby="features-title" className="border-t border-line">
+    <section id="features" aria-labelledby="features-title" className="relative isolate">
+      <AsciiRule />
+      <AsciiTexture variant="grid" />
       <div className="mx-auto max-w-6xl px-5 py-24 sm:px-8 md:py-32">
         <SectionHead
           id="features-title"
@@ -20,9 +24,9 @@ export function Features() {
           lede="Ten line items from the README. Tool names are the real ones."
         />
 
+        <AsciiRule className="mt-14" />
         <motion.ul
           key={reduced ? "static" : "animated"}
-          className="mt-14 border-t border-line"
           initial={reduced ? false : "hidden"}
           whileInView="shown"
           viewport={{ once: true, margin: "0px 0px -12% 0px" }}
@@ -35,11 +39,11 @@ export function Features() {
                 hidden: { opacity: 0, y: 14 },
                 shown: { opacity: 1, y: 0, transition: { duration: 0.5, ease: EASE_OUT } },
               }}
-              className="group grid grid-cols-[2.75rem_1fr] gap-x-4 gap-y-3 border-b border-line py-6 transition-colors duration-300 hover:bg-panel/60 md:grid-cols-[3.5rem_15rem_1fr_auto] md:items-baseline md:gap-x-6 md:px-3"
+              className="group sep-b grid grid-cols-[2.75rem_1fr] gap-x-4 gap-y-3 py-6 transition-colors duration-300 hover:bg-panel/60 md:grid-cols-[3.5rem_15rem_1fr_auto] md:items-baseline md:gap-x-6 md:px-3"
             >
               <span
                 aria-hidden="true"
-                className="flex h-9 w-9 items-center justify-center self-start rounded-[3px] border border-line bg-panel font-mono text-[16px] text-signal transition-colors group-hover:border-signal/50 md:h-10 md:w-10"
+                className="flex h-9 w-9 items-center justify-center self-start border border-line bg-panel font-mono text-[16px] text-signal transition-colors group-hover:border-signal/50 md:h-10 md:w-10"
               >
                 <span className="cell">{f.glyph}</span>
               </span>

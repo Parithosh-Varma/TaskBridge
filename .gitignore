@@ -12,6 +12,8 @@ tasks.db-*
 *.log
 heartbeat.json
 .worker.lock
+.restart.lock
+.restart_state.json
 .ngrok-domain
 .bridge-token
 .consent-secret

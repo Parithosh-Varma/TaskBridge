@@ -11,9 +11,45 @@
   --signal: #f2a007;
   --seal: #8fc39a;
   --wait: #b9a3e3;
+  --term: #140f0a;
+  --rule: #6b5a43;
   --ramp: linear-gradient(90deg, var(--ember), var(--signal) 50%, var(--seal));
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   color-scheme: dark;
+}
+
+/* Light theme: warm parchment. Each token mirrors its dark counterpart with
+   contrast tuned for a light ground. Applied via [data-theme] set before paint. */
+[data-theme="light"] {
+  --bg: #f6f1e7;
+  --panel: #efe8d9;
+  --panel-2: #e7dfcc;
+  --line: #d6c9b0;
+  --paper: #241c12;
+  --faint: #6f6250;
+  --ember: #c24d28;
+  --signal: #9a6206;
+  --seal: #2f7446;
+  --wait: #5f45b3;
+  --term: #fdfaf3;
+  --rule: #c3b291;
+  color-scheme: light;
+}
+
+/*
+ * next/font subsets JetBrains Mono to latin, so the box-drawing glyphs the
+ * ASCII chrome is built from (─│┌┐└┘) fell through to the metric fallback
+ * face, which renders them ~1.6x too wide and skews every frame (the demo's
+ * question box was off by 180px). Serve the real glyphs as a 1KB subset
+ * (public/fonts/jbm-box.woff2, cut from the same Google font) so frames keep
+ * JetBrains Mono's exact 0.6em advance on every platform.
+ */
+@font-face {
+  font-family: "TaskBridge Box Mono";
+  src: url("/fonts/jbm-box.woff2") format("woff2");
+  font-weight: 400 700;
+  unicode-range: U+2500-2502, U+250c, U+2510, U+2514, U+2518, U+251c, U+2524, U+252c, U+2534, U+253c, U+2550-2551,
+    U+256a, U+2571-2572;
 }
 
 @theme inline {
@@ -27,8 +63,10 @@
   --color-signal: var(--signal);
   --color-seal: var(--seal);
   --color-wait: var(--wait);
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains), ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --color-term: var(--term);
+  --color-rule: var(--rule);
+  --font-sans: var(--font-newsreader), ui-serif, Georgia, serif;
+  --font-mono: "TaskBridge Box Mono", var(--font-jetbrains), ui-monospace, "SFMono-Regular", Menlo, monospace;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -55,7 +93,6 @@ body {
 :focus-visible {
   outline: 2px solid var(--signal);
   outline-offset: 2px;
-  border-radius: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -108,7 +145,6 @@ body {
   .term-card {
     border: 1px solid var(--line);
     background: var(--panel);
-    border-radius: 6px;
   }
 
   .chip {
@@ -117,7 +153,6 @@ body {
     line-height: 1;
     padding: 5px 8px;
     border: 1px solid var(--line);
-    border-radius: 3px;
     color: var(--paper);
     background: var(--bg);
     white-space: nowrap;
@@ -133,6 +168,132 @@ body {
 
   .glow-signal {
     text-shadow: 0 0 10px color-mix(in srgb, var(--signal) 55%, transparent);
+  }
+
+  /* ── ASCII chrome ───────────────────────────────────────────────────── */
+
+  /* A run of ─ characters, clipped to whatever box it lands in. Decorative only.
+     `contain: inline-size` keeps the long run out of its parent's intrinsic sizing,
+     so it is safe to drop inside grid and flex containers. */
+  .ascii-rule {
+    display: block;
+    overflow: hidden;
+    contain: inline-size;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1;
+    color: var(--line);
+    user-select: none;
+  }
+
+  /* Row separators drawn as ─ runs, sitting in the element's own padding. */
+  .sep-t,
+  .sep-b {
+    position: relative;
+  }
+
+  .sep-t::after,
+  .sep-b::after {
+    content: "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────";
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1em;
+    overflow: hidden;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    line-height: 1;
+    color: var(--line);
+    pointer-events: none;
+  }
+
+  .sep-t::after {
+    top: 0;
+  }
+
+  .sep-b::after {
+    bottom: 0;
+  }
+
+  /* Box-drawing corner ticks for framed panels: ┌ ┐ above, └ ┘ below. */
+  .ascii-corners {
+    position: relative;
+  }
+
+  .ascii-corners::before,
+  .ascii-corners::after {
+    position: absolute;
+    left: 4px;
+    right: 4px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1;
+    white-space: pre;
+    text-align: justify;
+    text-align-last: justify;
+    color: var(--faint);
+    pointer-events: none;
+    content: "┌ ┐";
+  }
+
+  .ascii-corners::before {
+    top: -0.5em;
+  }
+
+  .ascii-corners::after {
+    content: "└ ┘";
+    bottom: -0.5em;
+  }
+
+  /* Themed logo: show only the variant that contrasts the active theme. */
+  .logo-dark {
+    display: inline;
+  }
+  .logo-light {
+    display: none;
+  }
+  [data-theme="light"] .logo-dark {
+    display: none;
+  }
+  [data-theme="light"] .logo-light {
+    display: inline;
+  }
+
+  /* Hero scrims, derived from --bg so they invert with the theme. */
+  .hero-scrim {
+    background: linear-gradient(
+      90deg,
+      var(--bg) 0%,
+      color-mix(in srgb, var(--bg) 94%, transparent) 30%,
+      color-mix(in srgb, var(--bg) 55%, transparent) 46%,
+      transparent 62%
+    );
+  }
+  .hero-vignette {
+    background: radial-gradient(
+      ellipse at 60% 50%,
+      transparent 40%,
+      color-mix(in srgb, var(--bg) 75%, transparent) 100%
+    );
+  }
+
+  /* ── Mermaid graph (02 / One task, end to end) ──────────────────────── */
+
+  /* Mermaid's SVG fills the aspect box and letterboxes itself inside it, so the
+     graph never overflows on a short viewport and never grows the page. */
+  .tb-mermaid svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+  }
+
+  .tb-mermaid svg text,
+  .tb-mermaid svg foreignObject {
+    user-select: none;
   }
 }
 
@@ -158,27 +319,12 @@ body {
   }
 }
 
-@keyframes caret {
-  0%,
-  49% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0;
-  }
-}
-
 .animate-pulse-soft {
   animation: pulse-soft 2.6s ease-in-out infinite;
 }
 
 .animate-lamp {
   animation: lamp 2.2s ease-in-out infinite;
-}
-
-.animate-caret {
-  animation: caret 1.05s steps(1) infinite;
 }
 
 /* Hero entrance. Under reduced motion the global rule collapses it to the final frame. */

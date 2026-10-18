@@ -39,7 +39,7 @@ const WIDE_RISK = /[⛁▣▤⟲⚑⊞◆●★]/;
 const TONE_CLASS: Record<SceneTone, string> = {
   paper: "text-paper",
   faint: "text-faint",
-  line: "text-[#6b5a43]",
+  line: "text-rule",
   ember: "text-ember",
   signal: "text-signal",
   seal: "text-seal",

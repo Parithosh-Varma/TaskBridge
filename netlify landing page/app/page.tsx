@@ -8,6 +8,7 @@ import { Hero } from "@/components/sections/Hero";
 import { Limitations } from "@/components/sections/Limitations";
 import { Nav } from "@/components/sections/Nav";
 import { Quickstart } from "@/components/sections/Quickstart";
+import { Screenshots } from "@/components/sections/Screenshots";
 import { Why } from "@/components/sections/Why";
 import { getStarCount } from "@/lib/github";
 
@@ -25,6 +26,7 @@ export default async function Home() {
         <Features />
         <Quickstart />
         <Demo />
+        <Screenshots />
         <Faq />
         <Limitations />
         <FinalCta stars={stars} />

@@ -1,0 +1,3 @@
+# Static-exported metadata route has no file extension — serve it as PNG.
+/opengraph-image
+	Content-Type: image/png

@@ -2,10 +2,10 @@
 // so a frame is nothing but drawImage blits from one texture.
 
 /** Brightness ramp, dark → bright. Index 0 is an empty cell. */
-export const RAMP = " ·:-=+*#%@";
+export const RAMP = " .:-=+*#%@";
 
 /** Structural glyphs a field can request explicitly via `glyph`. */
-export const EXTRA = "═[]╪╲╱─━·▸";
+export const EXTRA = "═[]╪╲╱─━>";
 
 export const GLYPHS = RAMP.slice(1) + EXTRA;
 

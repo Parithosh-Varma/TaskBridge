@@ -513,9 +513,18 @@ def register_routes(mcp) -> None:
   </form>
   <p><small>One-time code lives 5 minutes. Tokens issued: access {ACCESS_TTL // 3600}h, refresh {REFRESH_TTL // 86400}d.</small></p>
 </div></body></html>"""
+        # Chrome enforces form-action against the 302 that follows the approval
+        # POST: with only 'self' it blocks the jump to the provider's callback
+        # and the click "does nothing" (chromium issue 393431137). redirect_uri
+        # passed the registered+allowlisted checks above, so its origin is safe
+        # to name explicitly.
+        _ru = urlsplit(redirect_uri)
+        form_action = "'self'"
+        if _ru.scheme in ("http", "https") and _ru.netloc:
+            form_action = f"'self' {_ru.scheme}://{_ru.netloc}"
         return Response(html, media_type="text/html", headers={
             "Content-Security-Policy": ("default-src 'none'; style-src 'unsafe-inline'; "
-                                        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"),
+                                        f"form-action {form_action}; frame-ancestors 'none'; base-uri 'none'"),
             "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer",
             "Cache-Control": "no-store",

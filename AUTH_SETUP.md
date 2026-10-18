@@ -80,8 +80,9 @@ For Claude Web / ChatGPT Web, configure the MCP server URL with headers:
 - URL: `https://your-tunnel/mcp`
 - Headers: `Authorization: Bearer YOUR_TOKEN`
 
-### OAuth Sign-In (claude.ai custom connectors)
+### OAuth Sign-In (claude.ai / ChatGPT custom connectors)
 Claude's custom connector flow negotiates MCP authorization before connecting.
+(For ChatGPT see the ChatGPT subsection below.)
 TaskBridge publishes the required documents and flows on the same port/tunnel URL
 (see `oauth_service.py`; no external identity provider needed):
 
@@ -95,6 +96,30 @@ your browser opens `https://your-tunnel/authorize` → paste your **access code*
 `start_public.sh`, or — legacy — the `.bridge-token` value) → click
 **"Yes, this was me who is logging in — Approve"**. Claude then carries an
 access token (24 h, refreshable 30 d) automatically — no static header config needed.
+
+#### ChatGPT (developer mode)
+
+ChatGPT needs no listing either, but its OAuth client is stricter about two
+details — both handled by `oauth_service.py`:
+
+- **Discovery**: it fetches `/.well-known/oauth-authorization-server/mcp`
+  (the MCP-suffixed path); Claude only asks for the top-level form. TaskBridge
+  serves both, so ChatGPT resolves the client instead of failing with
+  "Failed to resolve OAuth client".
+- **Token exchange / refresh**: ChatGPT may omit `client_id` at `/token`;
+  TaskBridge restores the binding from the one-time code row (and the signed
+  `cid` claim for refreshes). Nothing is loosened — the code/refresh token
+  remains the credential.
+
+Setup: ChatGPT → Settings → Apps & Connectors → enable **Developer mode** →
+**Create connector** → paste `https://your-tunnel/mcp` → Authentication:
+**OAuth** → Connect. ChatGPT auto-registers its own client (`chatgpt.com` is on
+the default redirect allowlist) and lands on the same consent page — paste your
+access code and approve, exactly as for Claude.
+
+Tokens are audience-bound to the tunnel origin, so if a Cloudflare quick tunnel
+rotates to a new URL each run, users must reconnect once per new URL. A fixed
+ngrok domain (`.ngrok-domain`) keeps tokens valid across restarts.
 
 The consent secret is separate from the bearer token by default (`start_public.sh`
 generates `.consent-secret`, chmod 600), so the credential you paste in a browser

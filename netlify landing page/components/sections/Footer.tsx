@@ -1,10 +1,14 @@
+import { AsciiTexture } from "@/components/ascii/AsciiTexture";
+import { AsciiRule } from "@/components/ui/AsciiRule";
 import { GithubMark } from "@/components/ui/GithubMark";
 import { PROJECT_FILES } from "@/lib/content";
 import { REPO_URL } from "@/lib/github";
 
 export function Footer() {
   return (
-    <footer className="border-t border-line">
+    <footer className="relative isolate">
+      <AsciiRule />
+      <AsciiTexture variant="grid" className="opacity-45" />
       <div className="mx-auto grid max-w-6xl gap-10 px-5 py-14 font-mono text-[12px] text-faint sm:px-8 md:grid-cols-[1fr_auto]">
         <div>
           <p className="eyebrow mb-4">Project structure</p>

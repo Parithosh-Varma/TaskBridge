@@ -1,0 +1,6 @@
+# Test-only dependencies (the runtime set lives in requirements.txt).
+#   .venv/bin/pip install -r requirements-dev.txt
+#   .venv/bin/python -m pytest tests/test_worker_supervisor.py tests/test_restart_worker_tool.py -q
+# Real-launchd integration test (installs a disposable probe LaunchAgent):
+#   TASKBRIDGE_RUN_LAUNCHD_E2E=1 .venv/bin/python -m pytest tests/test_restart_integration.py -q
+pytest>=8.0

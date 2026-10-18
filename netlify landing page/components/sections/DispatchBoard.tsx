@@ -78,7 +78,7 @@ export function DispatchBoard({ reduced }: { reduced: boolean }) {
         <p className="eyebrow text-[10px]">┌ dispatch board</p>
         <p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.2em] text-signal">
           <span aria-hidden="true" className={reduced ? "" : "animate-lamp"}>
-            ●
+            *
           </span>
           worker online
         </p>

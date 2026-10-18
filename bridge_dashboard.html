@@ -4,260 +4,678 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dispatch board — TaskBridge</title>
+<meta name="theme-color" content="#14100b">
+<link rel="icon" type="image/png" href="/favicon.ico">
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem("bridge_theme");
+    if (!t) t = (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+    if (t === "light") document.documentElement.dataset.theme = "light";
+  } catch (e) {}
+})();
+</script>
 <style>
   :root {
     --ink: #14100b;        /* hall black, warm */
     --desk: #1e1712;       /* panel */
-    --desk2: #282017;      /* raised */
+    --desk2: #241b13;      /* raised */
+    --raise: #2b2115;      /* hover */
     --line: #3a2f22;       /* warm borders */
+    --line2: #4a3c2a;      /* brighter borders */
     --paper: #efe4cc;      /* teletype paper */
     --paper-dim: #d9cbae;
+    --paper-ink: #241b0f;
     --fg: #f2ead8;         /* main text */
     --faint: #ab9c83;      /* warm gray */
+    --faint2: #7d7159;     /* quietest */
     --signal: #f2a007;     /* amber — live */
-    --seal-green: #8fc39a; /* completed */
-    --seal-red: #de6a54;   /* failed / offline */
-    --seal-violet: #b9a3e3;/* waiting */
+    --ember: #e2603a;      /* ember — hot / arriving */
+    --seal: #8fc39a;       /* completed */
+    --wait: #b9a3e3;       /* waiting on you */
+    --fault: #de6a54;      /* failed / offline */
+    --lamp-off: #5a4f3e;
+    --sel-glow: rgba(242, 160, 7, .22);
+    --glow: rgba(242, 160, 7, .8);
+    --wait-tint: rgba(185, 163, 227, .05);
+    --sel-fg: var(--ink);
+    --btn-bg: #f2ead8; --btn-bg-h: #ddcfae; --btn-fg: #241b0f;
+    --destr-bg: #de6a54; --destr-bg-h: #ea7f6a; --destr-fg: #1c0d08;
+    --btn-shadow: rgba(0, 0, 0, .35);
+    /* control system: one height, radius, border, label, focus */
+    --ctl-h: 40px;
+    --ctl-r: 8px;
+    --ctl-label: #c3b59a;
+    --ctl-border: #7a6a4e;
+    --ctl-border-h: #8f7d5c;
+    --sw-off: #453c2e; --sw-on: #ad7405; --sw-knob: #f2ead8; --sw-check: #241b0f;
+    --chev: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="%23c3b59a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>');
+    --banner-bg: #3a2015; --banner-line: #8f4a33; --banner-fg: #f2d9c6; --banner-ico: #f08a63;
+    --sel-bg: #2f2314;
+    color-scheme: dark;
+    --mono: ui-monospace, "JetBrains Mono", "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --display: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", Arial, sans-serif;
+    --body: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  /* Light mode — the same board printed on office paper. */
+  html[data-theme="light"] {
+    --ink: #ece3cd;
+    --desk: #f5eedd;
+    --desk2: #ece2c9;
+    --raise: #f0e8d4;
+    --line: #d3c3a2;
+    --line2: #b9a985;
+    --paper: #fdfaf0;
+    --paper-dim: #dccdaa;
+    --paper-ink: #241b0f;
+    --fg: #241b0f;
+    --faint: #5f5138;
+    --faint2: #83745a;
+    --signal: #a06400;
+    --ember: #b04a26;
+    --seal: #2f6b44;
+    --wait: #64489e;
+    --fault: #a83a24;
+    --lamp-off: #c2b493;
+    --sel-glow: rgba(160, 100, 0, .18);
+    --glow: rgba(160, 100, 0, .5);
+    --wait-tint: rgba(100, 72, 158, .07);
+    --sel-fg: #fff8e6;
+    --btn-bg: #241b0f; --btn-bg-h: #3a2f22; --btn-fg: #f7f0de;
+    --destr-bg: #b4402c; --destr-bg-h: #9c3523; --destr-fg: #fff6ef;
+    --btn-shadow: rgba(36, 27, 15, .12);
+    --ctl-label: #52452d;
+    --ctl-border: #8a7a5e;
+    --ctl-border-h: #6f6047;
+    --sw-off: #9c8a5f; --sw-on: #a06400; --sw-knob: #fdfaf0; --sw-check: #241b0f;
+    --chev: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="%2352452d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>');
+    --banner-bg: #f8e5da; --banner-line: #c07a5e; --banner-fg: #6e2c15; --banner-ico: #b4441f;
+    --sel-bg: #f7edd4;
+    color-scheme: light;
   }
   * { box-sizing: border-box; }
   html { background: var(--ink); }
-  body { margin: 0; background: var(--ink); color: var(--fg);
-         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  body { margin: 0; background: var(--ink); color: var(--fg); font: 14px/1.5 var(--body); }
+  /* one scrollbar, dressed for both themes — no bare gray strip at the window edge */
+  html { scrollbar-width: thin; scrollbar-color: var(--line2) var(--desk); }
+  ::-webkit-scrollbar { width: 11px; height: 11px; }
+  ::-webkit-scrollbar-track { background: var(--desk); }
+  ::-webkit-scrollbar-thumb { background: var(--line2); border: 3px solid var(--desk); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--ctl-border); }
   :focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
-  code, pre, .mono { font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace; }
+  ::selection { background: var(--signal); color: var(--sel-fg); }
+  .mono, code, pre { font-family: var(--mono); }
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+             overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-  /* ---------- masthead : docket header ---------- */
-  .mast { display: flex; flex-wrap: wrap; gap: 12px 28px; align-items: flex-end;
-          padding: 18px 20px 14px; border-bottom: 1px solid var(--line);
-          background: var(--desk); }
-  .eyebrow { font-family: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", Arial, sans-serif;
-             text-transform: uppercase; letter-spacing: .22em; font-size: 11px; color: var(--faint); }
-  h1 { margin: 2px 0 6px; font-size: 30px; line-height: 1.05; font-weight: 800;
-       letter-spacing: .01em; text-transform: uppercase;
-       font-family: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", Arial, sans-serif; }
-  .now { font-size: 13px; color: var(--faint); max-width: 560px; }
+  /* ---------- masthead : the letterhead the machine prints ---------- */
+  .mast { display: flex; flex-wrap: wrap; gap: 16px 32px; align-items: flex-end;
+          padding: 20px 24px 14px; border-bottom: 1px solid var(--line); background: var(--desk); }
+  .mast-l { min-width: 0; }
+  .eyebrow { font-family: var(--display); text-transform: uppercase; letter-spacing: .24em;
+             font-size: 10px; color: var(--faint2); }
+  .wm-compact { font-family: var(--display); font-weight: 800; font-size: 26px;
+                text-transform: uppercase; letter-spacing: .06em; margin: 6px 0 0; line-height: 1; }
+  .wordmark { display: none; margin: 8px 0 2px; padding: 0; border: 0; background: transparent;
+              font-family: var(--mono); font-size: 9.5px; line-height: 1.06;
+              color: var(--fg); user-select: none; }
+  @media (min-width: 981px) { .wordmark { display: block; } .wm-compact { display: none; } }
+  .wordmark .wm-row { display: block; }
+  .wordmark .c { opacity: 0; }
+  .wordmark .c.on { opacity: 1; }
+  .wordmark .c.hd { color: var(--signal); text-shadow: 0 0 7px var(--glow); }
+  @keyframes blink { 50% { opacity: 0; } }
+  .now { font-size: 13px; color: var(--faint); max-width: 640px; margin-top: 9px; }
   .now strong { color: var(--signal); font-weight: 600; }
-  .mast-right { margin-left: auto; display: grid; gap: 8px; justify-items: end; }
-  .route { font-size: 12px; color: var(--faint); }
-  .route .k { display: inline-block; font-family: "Arial Narrow", Arial, sans-serif;
-              text-transform: uppercase; letter-spacing: .18em; font-size: 10px;
-              border: 1px solid var(--line); border-radius: 3px; padding: 1px 6px; margin-right: 6px; }
-  .route code { color: var(--paper); font-size: 12px; }
-  .tallies { display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
-  .tally { text-align: right; }
-  .tally .n { font-size: 20px; font-weight: 700; line-height: 1; }
-  .tally .l { font-size: 10px; text-transform: uppercase; letter-spacing: .16em; color: var(--faint); }
+  .mast-r { margin-left: auto; display: grid; gap: 9px; justify-items: end; }
+  .route { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); }
+  .route .k { font-family: var(--display); text-transform: uppercase; letter-spacing: .18em;
+              font-size: 9.5px; border: 1px solid var(--line); border-radius: 2px;
+              padding: 1px 7px; color: var(--faint2); }
+  .route code { color: var(--fg); font-size: 12px; }
+  #authstatus { cursor: pointer; }
+  #authstatus:hover { color: var(--signal); }
+
+  /* ---------- ops bar : tallies, engine, controls ---------- */
+  .ops { display: flex; flex-wrap: wrap; gap: 14px 30px; align-items: center;
+         padding: 12px 24px 13px; border-bottom: 1px solid var(--line); background: var(--desk2); }
+  .tallies { display: flex; gap: 26px; font-variant-numeric: tabular-nums; }
+  .tally { display: flex; flex-direction: column; }
+  .tally .n { font-family: var(--mono); font-weight: 700; font-size: 22px; line-height: 1; }
+  .tally .n.zero { color: var(--faint2); }
+  .tally .l { font-family: var(--display); text-transform: uppercase; letter-spacing: .18em;
+              font-size: 9.5px; color: var(--ctl-label); margin-top: 4px; }
   .tally.hot .n { color: var(--signal); }
+  .tally.warm .n { color: var(--wait); }
   .engine { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); }
-  .lamp { width: 10px; height: 10px; border-radius: 50%; background: #5a4f3e; flex: none; }
-  .lamp.on { background: var(--signal); box-shadow: 0 0 10px var(--signal); animation: pulse 2s ease-in-out infinite; }
-  .lamp.off { background: var(--seal-red); box-shadow: 0 0 8px var(--seal-red); }
+  .lamp { width: 9px; height: 9px; border-radius: 50%; background: var(--lamp-off); flex: none; }
+  .lamp.on { background: var(--signal); box-shadow: 0 0 10px var(--signal);
+             animation: pulse 2s ease-in-out infinite; }
+  .lamp.off { background: var(--fault); box-shadow: 0 0 8px var(--fault); }
   @keyframes pulse { 50% { opacity: .45; } }
-  .controls { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--faint); }
-  select, button { background: var(--desk2); color: var(--fg); border: 1px solid var(--line);
-                   border-radius: 4px; padding: 5px 10px; font-size: 12px; }
-  button { cursor: pointer; }
-  button:hover { border-color: var(--signal); }
+  .controls { flex: 1 1 560px; display: flex; flex-wrap: wrap; align-items: center;
+              gap: 10px 14px; font-size: 12px; }
+  /* ---------- buttons : Untitled UI anatomy, board palette ---------- */
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+         height: 40px; padding: 0 14px; border: 0; border-radius: 8px;
+         font-family: var(--body); font-size: 13.5px; font-weight: 600; line-height: 1;
+         white-space: nowrap; cursor: pointer;
+         transition: background-color .1s linear, box-shadow .1s linear, color .1s linear; }
+  .btn-sm { height: 36px; padding: 0 12px; font-size: 12.5px; }
+  .btn .ic { font-family: var(--mono); font-size: 1.05em; line-height: 1; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn-primary { background: var(--btn-bg); color: var(--btn-fg);
+                 box-shadow: 0 1px 2px var(--btn-shadow); }
+  .btn-primary:hover { background: var(--btn-bg-h); }
+  .btn-secondary { background: var(--desk); color: var(--fg);
+                   box-shadow: inset 0 0 0 1px var(--line2), 0 1px 2px var(--btn-shadow); }
+  .btn-secondary:hover { background: var(--raise); }
+  .btn-secondary .ic { color: var(--faint); }
+  .btn-primary-destructive { background: var(--destr-bg); color: var(--destr-fg);
+                             box-shadow: 0 1px 2px var(--btn-shadow); }
+  .btn-primary-destructive:hover { background: var(--destr-bg-h); }
+
+  /* ---------- controls : one system — height, radius, border, focus ---------- */
+  .ctlgroup { display: inline-flex; align-items: center; gap: 8px; }
+  .ctllab { font-size: 12px; font-weight: 600; color: var(--ctl-label); }
+  select.ctl { appearance: none; -webkit-appearance: none;
+               background: var(--desk) var(--chev) no-repeat right 10px center;
+               color: var(--fg); border: 0; border-radius: var(--ctl-r);
+               height: var(--ctl-h); padding: 0 34px 0 12px;
+               font-size: 13px; font-family: var(--body);
+               box-shadow: inset 0 0 0 1px var(--ctl-border);
+               transition: box-shadow .1s linear, background-color .1s linear; }
+  select.ctl:hover { box-shadow: inset 0 0 0 1px var(--ctl-border-h); }
+  .sync { display: inline-flex; align-items: stretch; border-radius: var(--ctl-r);
+          background: var(--desk);
+          box-shadow: inset 0 0 0 1px var(--ctl-border), 0 1px 2px var(--btn-shadow); }
+  .swchip { position: relative; display: inline-flex; align-items: center; gap: 9px;
+            cursor: pointer; height: var(--ctl-h); padding: 0 13px 0 12px; margin: 0;
+            border-radius: calc(var(--ctl-r) - 1px) 0 0 calc(var(--ctl-r) - 1px);
+            font-size: 12.5px; font-weight: 600; color: var(--ctl-label);
+            transition: background-color .1s linear; }
+  .swchip:hover { background: var(--raise); }
+  .swchip:active { background: var(--desk); }
+  .sw { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; }
+  .swtrack { position: relative; flex: none; width: 36px; height: 20px; border-radius: 999px;
+             background: var(--sw-off); box-shadow: inset 0 0 0 1px var(--ctl-border);
+             transition: background-color .12s linear; }
+  .swknob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+            border-radius: 50%; background: var(--sw-knob); box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+            transition: transform .12s ease; }
+  .swtrack::after { content: ""; position: absolute; top: 2px; left: 18px; width: 14px; height: 14px;
+             background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="%23241b0f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 7.5 5.6 10 11 4.2"/></svg>') center / 8px no-repeat;
+             opacity: 0; transition: opacity .12s ease; }
+  .sw:checked + .swtrack { background: var(--sw-on); }
+  .sw:checked + .swtrack .swknob { transform: translateX(16px); }
+  .sw:checked + .swtrack::after { opacity: 1; }
+  .sw:focus-visible + .swtrack { outline: 2px solid var(--signal); outline-offset: 2px; }
+  .sync .btn { border-radius: 0 calc(var(--ctl-r) - 1px) calc(var(--ctl-r) - 1px) 0;
+               height: var(--ctl-h); box-shadow: none;
+               border-left: 1px solid var(--ctl-border); }
+  .sync .btn:focus-visible { outline-offset: -3px; }
+  .cadence { color: var(--ctl-label); font-size: 11.5px; letter-spacing: .01em; }
+  .sync:has(input:not(:checked)) + .cadence { display: none; }
+  .icobtn { margin-left: auto; width: var(--ctl-h); height: var(--ctl-h); padding: 0; flex: none;
+            display: inline-flex; align-items: center; justify-content: center;
+            border: 0; border-radius: var(--ctl-r); cursor: pointer;
+            background: var(--desk); color: var(--ctl-label);
+            box-shadow: inset 0 0 0 1px var(--ctl-border);
+            transition: background-color .1s linear, color .1s linear, box-shadow .1s linear; }
+  .icobtn:hover { background: var(--raise); color: var(--fg);
+                  box-shadow: inset 0 0 0 1px var(--ctl-border-h); }
+  .icobtn:active { background: var(--desk); color: var(--fg); }
+  .i { width: 18px; height: 18px; flex: none; }
+  .btn-sm .i { width: 16px; height: 16px; }
+  .i-moon { display: none; }
+  html[data-theme="light"] .i-sun { display: none; }
+  html[data-theme="light"] .i-moon { display: block; }
+  .i-spin { display: none; }
+  .btn.is-loading .i-spin { display: block; animation: spin .8s linear infinite; }
+  .btn.is-loading .i-refresh { display: none; }
+  .btn.is-loading { opacity: .75; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (max-width: 600px), (pointer: coarse) { :root { --ctl-h: 44px; } }
+  input[type="checkbox"] { accent-color: var(--signal); }
+  label { display: inline-flex; align-items: center; gap: 5px; }
+
+  /* ---------- engine fault banner : full width, under the toolbar ---------- */
+  .offbanner { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px;
+               padding: 10px 24px; background: var(--banner-bg);
+               border-bottom: 1px solid var(--banner-line);
+               color: var(--banner-fg); font-size: 12.5px; }
+  .offbanner[hidden] { display: none; }
+  .offbanner .i { flex: none; color: var(--banner-ico); }
+  .offbanner .offmsg { font-weight: 600; }
+  .offbanner code { font-family: var(--mono); font-size: 12px; background: var(--desk);
+                    border: 1px solid var(--ctl-border); border-radius: var(--ctl-r);
+                    padding: 3px 9px; color: var(--fg); }
+  .offbanner .btn { flex: none; }
 
   /* ---------- the wire : signature ticker ---------- */
-  .wire { display: flex; align-items: center; gap: 12px; padding: 7px 20px;
-          border-bottom: 1px solid var(--line); background: var(--ink);
-          font-size: 12px; }
-  .wire-k { font-family: "Arial Narrow", Arial, sans-serif; text-transform: uppercase;
-            letter-spacing: .2em; font-size: 10px; color: var(--ink); background: var(--signal);
-            border-radius: 3px; padding: 2px 8px; flex: none; }
+  .wire { display: flex; align-items: center; gap: 14px; padding: 8px 24px;
+          border-bottom: 1px solid var(--line); background: var(--ink); font-size: 12px; }
+  .wire-k { font-family: var(--mono); font-size: 10.5px; color: var(--signal); flex: none;
+            letter-spacing: .02em; }
   .wire-view { overflow: hidden; white-space: nowrap; flex: 1; color: var(--faint); }
-  .wire-text { display: inline-block; padding-left: 100%; animation: tick 30s linear infinite; }
+  .wire-text { display: inline-block; padding-left: 100%; animation: tick 32s linear infinite; }
   .wire-text.short { padding-left: 0; animation: none; }
   .wire-view:hover .wire-text { animation-play-state: paused; }
   @keyframes tick { to { transform: translateX(-100%); } }
 
+  /* ---------- section rules : ─┤ label ├──────── */
+  .rule { display: flex; align-items: center; gap: 10px; margin: 16px 24px 10px;
+          font-family: var(--display); text-transform: uppercase; letter-spacing: .2em;
+          font-size: 10.5px; color: var(--faint2); }
+  .rule-l::before { content: "─┤ "; color: var(--line2); letter-spacing: 0; }
+  .rule-l::after { content: " ├"; color: var(--line2); letter-spacing: 0; }
+  .rule-f { flex: 1; border-top: 1px solid var(--line); }
+  #listcol > .rule, #detailcol > .rule { margin-left: 20px; margin-right: 20px; }
+
   /* ---------- columns ---------- */
-  main { display: grid; grid-template-columns: minmax(290px, 370px) 1fr; }
-  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
-  .colh { font-family: "Arial Narrow", Arial, sans-serif; text-transform: uppercase;
-          letter-spacing: .2em; font-size: 11px; color: var(--faint);
-          padding: 14px 16px 8px; }
+  main { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; }
+  @media (max-width: 980px) {
+    main { grid-template-columns: 1fr; }
+    #listcol { border-right: 0; border-bottom: 1px solid var(--line); }
+    .mast-r { margin-left: 0; justify-items: start; width: 100%; }
+    .route { flex-wrap: wrap; }
+    .route code { overflow-wrap: anywhere; }
+  }
   #listcol { border-right: 1px solid var(--line); }
-  #list { padding: 0 16px 16px; display: grid; gap: 10px; align-content: start; }
-  #detailcol { padding-bottom: 24px; min-width: 0; }
-  #detail { padding: 0 20px; }
+  #list { padding: 0 16px 18px; display: grid; gap: 10px; align-content: start; }
+  #detailcol { padding-bottom: 26px; min-width: 0; }
+  #detail { padding: 0 24px; }
 
   /* ---------- dockets ---------- */
-  .task { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px;
+  .task { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px 11px;
           cursor: pointer; background: var(--desk); }
-  .task:hover { border-color: var(--signal); }
-  .task.sel { border-color: var(--signal); background: var(--desk2); }
+  .task:hover { border-color: var(--line2); background: var(--raise); }
+  .task.sel { border-color: var(--signal); background: var(--sel-bg);
+              box-shadow: 0 0 0 1px var(--sel-glow), 0 2px 12px var(--btn-shadow); }
+  .task.pending { border-left: 3px solid var(--faint2); }
   .task.running { border-left: 3px solid var(--signal); }
-  .task.pending { border-left: 3px solid var(--paper-dim); }
-  .task.waiting { border-left: 3px solid var(--seal-violet); }
-  .task.failed { border-left: 3px solid var(--seal-red); }
-  .task.completed, .task.cancelled { border-left: 3px solid var(--line); }
-  .task .top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-  .task .id { margin-left: auto; font-size: 11px; color: var(--faint); }
-  .omark { display: inline-flex; flex: none; vertical-align: -2px; }
-  .filedby { display: flex; align-items: center; gap: 7px; font-size: 12px;
-             color: var(--faint); margin: 8px 0 0; }
-  .task .t { font-weight: 600; font-size: 13.5px; word-break: break-word; }
-  .task .m { font-size: 11px; color: var(--faint); margin-top: 3px; }
+  .task.waiting { border-left: 3px solid var(--wait); }
+  .task.failed { border-left: 3px solid var(--fault); }
+  .task.completed, .task.cancelled { border-left: 3px solid var(--line2); }
+  .task.waiting { background-image: linear-gradient(var(--wait-tint), var(--wait-tint)); }
+  .task .r1 { display: flex; align-items: center; gap: 8px; }
+  .omark { display: inline-flex; flex: none; }
+  .dno { font-family: var(--mono); font-size: 11px; color: var(--fg); white-space: nowrap; }
+  .dno .nop { color: var(--faint2); }
+  .leader { flex: 1; border-bottom: 1px dotted var(--line2); min-width: 14px;
+            align-self: center; margin: 0 2px; transform: translateY(1px); }
+  .sig { font-family: var(--mono); font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+  .sig .word { font-family: var(--display); font-weight: 400; text-transform: uppercase;
+               letter-spacing: .14em; font-size: 9.5px; margin-left: 6px; vertical-align: 1px; }
+  .task.pending .sig { color: var(--faint); }
+  .task.running .sig { color: var(--signal); }
+  .task.waiting .sig { color: var(--wait); }
+  .task.failed .sig { color: var(--fault); }
+  .task.completed .sig, .task.cancelled .sig { color: var(--faint); }
+  .task .t { font-weight: 600; font-size: 13.5px; line-height: 1.35; margin-top: 7px; word-break: break-word; }
+  .task .m { font-family: var(--mono); font-size: 10.5px; color: var(--faint2); margin-top: 4px;
+             display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+  .task .m .cm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .task .m .sep { color: var(--line2); flex: none; }
+  .task .m .cat, .task .m .ct { flex: none; }
 
-  /* ---------- rubber stamps ---------- */
-  .stamp { display: inline-block; font-family: ui-monospace, Menlo, Consolas, monospace;
-           font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em;
-           border: 2px solid; border-radius: 3px; padding: 0 7px; transform: rotate(-1.2deg); }
-  .st-pending { color: var(--paper-dim); border-color: var(--paper-dim); }
+  /* ---------- rubber stamps (the seal on a filed docket) ---------- */
+  .stamp { display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+           text-transform: uppercase; letter-spacing: .12em; border: 2px solid;
+           border-radius: 3px; padding: 1px 8px 0; transform: rotate(-1.2deg); white-space: nowrap; }
+  .st-pending { color: var(--faint); border-color: var(--faint); }
   .st-running { color: var(--signal); border-color: var(--signal); }
-  .st-waiting { color: var(--seal-violet); border-color: var(--seal-violet); }
+  .st-waiting { color: var(--wait); border-color: var(--wait); }
   .st-completed, .st-cancelled { color: var(--faint); border-color: var(--faint); }
-  .st-failed { color: var(--seal-red); border-color: var(--seal-red); }
+  .st-failed { color: var(--fault); border-color: var(--fault); }
 
   /* ---------- observation ---------- */
-  #detail h2 { margin: 0; font-size: 20px; line-height: 1.25; word-break: break-word; }
-  .did { font-size: 12px; color: var(--faint); margin: 4px 0 8px; }
-  .docketmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-                gap: 6px 18px; font-size: 12px; color: var(--faint); margin: 10px 0 4px;
+  .d-head { display: flex; gap: 16px; align-items: flex-start; }
+  .d-head h2 { margin: 0; font-size: 21px; line-height: 1.25; word-break: break-word; flex: 1; }
+  .d-seal { flex: none; margin-top: 2px; }
+  .dno-chip { margin: 6px 0 2px; gap: 9px; font-family: var(--mono); font-weight: 400;
+              font-size: 12px; cursor: copy; }
+  .dno-chip:hover { box-shadow: inset 0 0 0 1px var(--signal), 0 1px 2px var(--btn-shadow); }
+  .dno-chip .nop { color: var(--faint2); }
+  .dno-chip .hint { font-family: var(--display); text-transform: uppercase; letter-spacing: .16em;
+                    font-size: 9px; color: var(--faint2); }
+  .did { font-family: var(--mono); font-size: 11px; color: var(--faint2); margin: 8px 0 10px; }
+  .filedby { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--faint);
+             margin: 10px 0 2px; }
+  .docketmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+                gap: 8px 22px; font-size: 12px; color: var(--faint); margin: 10px 0 4px;
                 border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
                 padding: 10px 0; font-variant-numeric: tabular-nums; }
-  .docketmeta code { color: var(--fg); word-break: break-all; }
-  .rule { font-family: "Arial Narrow", Arial, sans-serif; text-transform: uppercase;
-          letter-spacing: .2em; font-size: 11px; color: var(--faint); margin: 18px 0 8px;
-          display: flex; align-items: center; gap: 10px; }
-  .rule::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
-  details { border: 1px solid var(--line); border-radius: 5px; margin-bottom: 10px; background: var(--desk); }
-  details summary { cursor: pointer; padding: 8px 12px; font-weight: 600; font-size: 13px; }
+  .docketmeta code { color: var(--fg); }
+  .docketmeta .kv { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .docketmeta .kv .k { flex: none; min-width: 76px; color: var(--ctl-label); }
+  .docketmeta .kv .v { font-family: var(--mono); color: var(--fg); min-width: 0;
+                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .docketmeta .kv.dir { grid-column: 1 / -1; align-items: center; }
+  .docketmeta .kv.dir .v { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .copybtn { flex: none; width: 32px; height: 32px; padding: 0; gap: 0; }
+  .copybtn .i { width: 15px; height: 15px; }
+  details { border: 1px solid var(--line); border-radius: 3px; margin-bottom: 10px; background: var(--desk); }
+  details summary { cursor: pointer; padding: 8px 12px; font-weight: 600; font-size: 13px;
+                    display: flex; align-items: center; gap: 9px; list-style: none; }
+  details summary::-webkit-details-marker { display: none; }
+  details summary::marker { content: ""; }
+  details summary::before { content: ""; flex: none; width: 16px; height: 16px;
+                            background: var(--chev) center / 13px 13px no-repeat;
+                            transform: rotate(-90deg); transition: transform .14s ease; }
+  details[open] summary::before { transform: rotate(0deg); }
+  details summary:hover { background: var(--raise); border-radius: 2px; }
+  details summary:focus-visible { outline-offset: -2px; }
+  details .badge { margin-left: auto; flex: none; font-family: var(--mono); font-weight: 400;
+                   font-size: 10.5px; color: var(--ctl-label); background: var(--desk2);
+                   border: 1px solid var(--line2); border-radius: 999px; padding: 1px 8px; }
   details .body { padding: 0 12px 12px; }
-  pre { border: 1px solid var(--line); border-radius: 5px; padding: 10px 12px; overflow: auto;
-        max-height: 380px; font-size: 12px; white-space: pre-wrap; word-break: break-word;
-        margin: 0; background: var(--desk); color: var(--fg); }
-  /* the machine prints on paper */
-  pre.paper { background: var(--paper); color: #241b0f; border-color: var(--paper-dim);
-              max-height: 520px; box-shadow: inset 0 0 40px rgba(120, 90, 40, .12); }
-  .logbar { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--faint);
+  pre { border-radius: 3px; padding: 10px 12px; overflow: auto; max-height: 380px;
+        font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 0;
+        background: var(--desk); color: var(--fg); border: 1px solid var(--line); }
+  /* the machine prints on paper — tractor-feed perforations top and bottom */
+  pre.paper { background: var(--paper); color: var(--paper-ink);
+              border-color: var(--paper-dim); border-top: 2px dashed var(--paper-dim);
+              border-bottom: 2px dashed var(--paper-dim); max-height: 520px;
+              box-shadow: inset 0 0 40px rgba(120, 90, 40, .12); }
+  .logbar { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--faint);
             margin: 8px 0; flex-wrap: wrap; }
-  .note { color: var(--faint); font-size: 11px; margin-top: 8px; }
+  #log-off { font-family: var(--mono); font-size: 11px; color: var(--faint2); }
+  .swlabel { display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
+             font-size: 12px; color: var(--ctl-label); }
+  .logidle { border: 1px solid var(--line); border-radius: 3px; background: var(--desk);
+             color: var(--ctl-label); font-family: var(--mono); font-size: 12px;
+             padding: 20px 14px; text-align: center; }
+  .note { color: var(--faint2); font-size: 11px; margin-top: 8px; }
 
   /* ---------- lower strips ---------- */
-  .strip { padding: 0 20px 20px; }
-  .cjob { border: 1px solid var(--line); border-radius: 5px; padding: 8px 12px; margin-bottom: 8px;
+  .strip { padding: 0 0 6px; }
+  .strip:last-of-type { padding-bottom: 20px; }
+  #cjobs, .strip details, #wmeta { margin-left: 24px; margin-right: 24px; }
+  #cj-count { color: var(--signal); }
+  .cjob { border: 1px solid var(--line); border-radius: 3px; padding: 9px 12px; margin-bottom: 8px;
           background: var(--desk); font-size: 12px; cursor: pointer; }
-  .cjob:hover { border-color: var(--seal-violet); }
-  .cjob.sel { border-color: var(--seal-violet); background: var(--desk2); }
-  .cjob .jm { color: var(--faint); font-size: 11px; margin-top: 2px; }
+  .cjob:hover { border-color: var(--line2); background: var(--raise); }
+  .cjob.sel { border-color: var(--wait); background: var(--desk2); }
+  .cjob .jr1 { display: flex; align-items: center; gap: 8px; }
+  .cjob .jr1 .sig { color: var(--faint); }
+  .cjob .jm { font-family: var(--mono); color: var(--faint2); font-size: 10.5px; margin-top: 4px; }
   .cjob pre { max-height: 200px; margin-top: 8px; }
-  .empty { color: var(--faint); padding: 22px; text-align: center; border: 1px dashed var(--line);
-           border-radius: 5px; }
-  .err { color: var(--seal-red); }
-  footer { padding: 12px 20px 20px; color: var(--faint); font-size: 11.5px;
+  .cjob .leader { align-self: center; }
+
+  /* ---------- model panel (worker default) ---------- */
+  #modelbtntext { max-width: 190px; overflow: hidden; text-overflow: ellipsis;
+                  white-space: nowrap; font-family: var(--mono); font-size: 11.5px; }
+  .modal-bg { position: fixed; inset: 0; z-index: 40; display: flex;
+              align-items: flex-start; justify-content: center;
+              padding: 7vh 16px 16px; background: rgba(10, 7, 4, .62); }
+  .modal-bg[hidden] { display: none; }
+  .modal { width: min(560px, 100%); max-height: 78vh; display: flex; flex-direction: column;
+           background: var(--desk); border: 1px solid var(--line2); border-radius: 8px;
+           box-shadow: 0 24px 64px var(--btn-shadow), 0 2px 8px var(--btn-shadow); }
+  .modal-head { display: flex; align-items: center; gap: 12px; padding: 14px 18px 8px; }
+  .modal-head h3 { margin: 0; font-size: 16px; flex: 1; }
+  .modal-sub { padding: 0 18px 12px; color: var(--faint); font-size: 12.5px;
+               border-bottom: 1px solid var(--line); }
+  .modal-sub code { color: var(--fg); }
+  .modal-tools { display: flex; gap: 10px; padding: 12px 18px 8px; }
+  input.ctl { flex: 1; min-width: 0; height: var(--ctl-h); padding: 0 12px; border: 0;
+              border-radius: var(--ctl-r); background: var(--desk2); color: var(--fg);
+              font: 13px/1 var(--mono); box-shadow: inset 0 0 0 1px var(--ctl-border); }
+  input.ctl:focus { outline: none; box-shadow: inset 0 0 0 2px var(--signal); }
+  input.ctl::placeholder { color: var(--faint2); }
+  .modal-list { overflow: auto; padding: 2px 10px 8px; flex: 1; min-height: 140px; }
+  .modal-empty { color: var(--faint); text-align: center; padding: 26px 10px; font-size: 12.5px; }
+  .mrow { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin: 2px 0;
+          border-radius: 6px; cursor: pointer; font-family: var(--mono); font-size: 12.5px; }
+  .mrow:hover { background: var(--raise); }
+  .mrow:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--signal); }
+  .mrow.sel { background: var(--desk2); box-shadow: inset 0 0 0 1px var(--signal); }
+  .mrow .mname { overflow-wrap: anywhere; }
+  .mrow .tag { margin-left: auto; flex: none; font-family: var(--display); font-weight: 700;
+               text-transform: uppercase; letter-spacing: .14em; font-size: 9px;
+               color: var(--signal); }
+  .modal-foot { display: flex; align-items: center; gap: 10px; padding: 10px 18px 14px;
+                border-top: 1px solid var(--line); min-height: 46px; }
+  .modal-status { flex: 1; font-size: 12px; color: var(--faint); }
+  .modal-status.ok { color: var(--seal); }
+  .modal-status.err { color: var(--fault); }
+
+  /* ---------- empty states ---------- */
+  .empty { color: var(--faint); padding: 18px; text-align: center; border: 1px dashed var(--line);
+           border-radius: 3px; }
+  .empty pre { border: 0; background: transparent; padding: 0; margin: 0 0 12px; display: inline-block;
+               text-align: left; color: var(--line2); font-size: 11px; line-height: 1.3; }
+  .empty .dir { max-width: 420px; margin: 0 auto; font-size: 12.5px; }
+  .err { color: var(--fault); }
+  footer { padding: 14px 24px 22px; color: var(--faint2); font-size: 11.5px;
            border-top: 1px solid var(--line); }
+  footer .mono { color: var(--faint); }
+
+  /* ---------- auth wall ---------- */
+  .authwall { min-height: 100vh; display: flex; align-items: center; justify-content: center;
+              text-align: center; padding: 24px; }
+  .authwall pre { border: 0; background: transparent; color: var(--signal); display: inline-block;
+                  text-align: left; font-size: 11px; line-height: 1.35; margin: 0 0 18px; padding: 0; }
+  .authwall p { color: var(--faint); max-width: 460px; margin: 0 auto; font-size: 13px; }
 
   @media (prefers-reduced-motion: reduce) {
     .wire-text { animation: none; padding-left: 0; }
     .lamp.on { animation: none; }
+    .btn.is-loading .i-spin { animation: none; }
     * { transition: none !important; }
   }
 </style>
 </head>
 <body>
 <header class="mast">
-  <div>
+  <div class="mast-l">
     <div class="eyebrow">Form BR-1 · TaskBridge</div>
-    <h1>Dispatch board</h1>
+    <h1 class="sr-only">TaskBridge dispatch board</h1>
+    <div class="wm-compact" aria-hidden="true">TASKBRIDGE</div>
+    <pre id="wordmark" class="wordmark" aria-hidden="true"></pre>
     <div class="now" id="nowline">Connecting to the wire…</div>
   </div>
-  <div class="mast-right">
+  <div class="mast-r">
     <div class="route"><span class="k">MCP</span><code id="mcpurl">/mcp</code></div>
     <div class="route"><span class="k">Board</span><code id="pageurl"></code></div>
-    <div class="route"><span class="k">Auth</span><code id="authstatus">🔒 secure</code></div>
-    <div class="tallies">
-      <div class="tally hot"><div class="n" id="c-running">–</div><div class="l">Running</div></div>
-      <div class="tally"><div class="n" id="c-pending">–</div><div class="l">Pending</div></div>
-      <div class="tally"><div class="n" id="c-waiting">–</div><div class="l">Waiting</div></div>
-      <div class="tally"><div class="n" id="c-done">–</div><div class="l">Filed</div></div>
-    </div>
-    <div class="engine"><span class="lamp" id="wdot"></span><span id="wpill">engine —</span></div>
-    <div class="controls">
-      <label>Show <select id="filter">
-        <option value="all">everything</option>
-        <option value="pending">pending</option>
-        <option value="running">running</option>
-        <option value="waiting">waiting</option>
-        <option value="completed">completed</option>
-        <option value="failed">failed</option>
-        <option value="cancelled">cancelled</option>
-      </select></label>
-      <label><input type="checkbox" id="auto" checked> auto-refresh</label>
-      <button id="refresh">Refresh now</button>
-    </div>
+    <div class="route"><span class="k">Auth</span><code id="authstatus" title="click to change token">—</code></div>
   </div>
 </header>
+<div class="ops">
+  <div class="tallies">
+    <div class="tally hot" title="Running — the worker is executing these dockets right now"><div class="n" id="c-running">–</div><div class="l">Running</div></div>
+    <div class="tally" title="Pending — queued, waiting to be picked up"><div class="n" id="c-pending">–</div><div class="l">Pending</div></div>
+    <div class="tally warm" title="Waiting — the agent paused and needs an answer from you"><div class="n" id="c-waiting">–</div><div class="l">Waiting</div></div>
+    <div class="tally" title="Filed — finished: completed, failed or cancelled"><div class="n" id="c-done">–</div><div class="l">Filed</div></div>
+  </div>
+  <div class="engine"><span class="lamp" id="wdot"></span><span id="wpill">engine —</span></div>
+  <div class="controls">
+    <div class="ctlgroup">
+      <label class="ctllab" for="filter">Filter</label>
+      <select id="filter" class="ctl">
+        <option value="all">All dockets</option>
+        <option value="pending">Pending</option>
+        <option value="running">Running</option>
+        <option value="waiting">Waiting on you</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+        <option value="cancelled">Cancelled</option>
+      </select>
+    </div>
+    <div class="sync">
+      <label class="swchip" for="auto">
+        <input class="sw" type="checkbox" id="auto" role="switch" checked aria-describedby="cadence">
+        <span class="swtrack" aria-hidden="true"><span class="swknob"></span></span>
+        Auto-refresh
+      </label>
+      <button id="refresh" class="btn btn-primary" type="button">
+        <svg class="i i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        <svg class="i i-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke-dasharray="42 15"/></svg>
+        Refresh now
+      </button>
+    </div>
+    <div class="ctlgroup">
+      <label class="ctllab" for="modelbtn">Model</label>
+      <button id="modelbtn" class="btn btn-secondary btn-sm" type="button"
+              aria-haspopup="dialog" title="Set the worker's default model">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>
+        <span id="modelbtntext">…</span>
+      </button>
+    </div>
+    <span class="cadence" id="cadence">updates every 3s</span>
+    <button id="theme" class="icobtn" type="button" aria-label="Switch to day mode" title="Switch to day mode">
+      <svg class="i i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      <svg class="i i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+    </button>
+  </div>
+</div>
+<div class="offbanner" id="offbanner" hidden role="status">
+  <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+  <span class="offmsg">Engine offline — nothing is picking up dockets.</span>
+  <span>Restart the worker:</span>
+  <code id="offcmd">./tasks_cli.py restart-worker</code>
+  <button id="offcopy" class="btn btn-secondary btn-sm" type="button" aria-label="Copy restart command">
+    <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    <span class="copy-label">Copy command</span>
+  </button>
+</div>
 <div class="wire" aria-live="off">
-  <span class="wire-k">Wire</span>
+  <span class="wire-k">═╡ WIRE ╞═</span>
   <div class="wire-view"><span class="wire-text short" id="wiretext">wire quiet</span></div>
 </div>
 <main>
   <section id="listcol" aria-label="Task dockets">
-    <div class="colh">Dockets</div>
+    <div class="rule"><span class="rule-l">Dockets</span><span class="rule-f"></span></div>
     <div id="list"><div class="empty">Reading the wire…</div></div>
   </section>
   <section id="detailcol" aria-label="Observation">
-    <div class="colh">Observation</div>
-    <div id="detail"><div class="empty">Pick a docket to watch the agent work. Its live log prints here while it runs.</div></div>
+    <div class="rule"><span class="rule-l">Observation</span><span class="rule-f"></span></div>
+    <div id="detail"><div class="empty">Pick a docket from the left. Its printout streams here while the machine works.</div></div>
   </section>
 </main>
 <div class="strip">
-  <div class="rule">Return wire — Claude jobs, OpenCode → Claude (<span id="cj-count">0</span>)</div>
+  <div class="rule"><span class="rule-l">Return wire — Claude jobs <span id="cj-count">0</span></span><span class="rule-f"></span></div>
   <div id="cjobs"><div class="empty">Nothing on the return wire yet.</div></div>
 </div>
 <div class="strip">
-  <div class="rule">Engine room</div>
+  <div class="rule"><span class="rule-l">Engine room</span><span class="rule-f"></span></div>
   <div class="docketmeta" id="wmeta"></div>
   <details><summary>engine log, last lines</summary><div class="body"><pre id="wlog">loading…</pre></div></details>
 </div>
-<footer>Same server and same address as the MCP endpoint (<span class="mono">/mcp</span>) — open this page while Claude or ChatGPT works and watch each docket print. Refreshes on its own; nothing to install.</footer>
+<footer>Same server, same address as the MCP endpoint (<span class="mono">/mcp</span>) — open this page while Claude or ChatGPT works and watch each docket print. Refreshes on its own; nothing to install.</footer>
+
+<div class="modal-bg" id="modelmodal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modaltitle">
+    <div class="modal-head">
+      <h3 id="modaltitle">Worker default model</h3>
+      <button id="modelclose" class="icobtn" type="button" aria-label="Close" title="Close">
+        <svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-sub">Persists to <code>worker_config.json</code> — takes effect on the engine's next pass. Tasks with their own <code>model</code> still override it.</div>
+    <div class="modal-tools">
+      <input class="ctl" id="modelsearch" type="text" placeholder="Filter — e.g. haiku, free, opencode/" aria-label="Filter models">
+      <button id="modelreload" class="btn btn-secondary btn-sm" type="button">Reload list</button>
+    </div>
+    <div class="modal-list" id="modellist" role="listbox" aria-label="Available models"></div>
+    <div class="modal-foot"><span class="modal-status" id="modelstatus"></span></div>
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
-  var sel = null, logOffset = 0, follow = true, cjobSel = null, lastWire = "";
+  var sel = null, logOffset = 0, follow = true, cjobSel = null, lastWire = "", lastStatus = "";
   var $ = function(id){ return document.getElementById(id); };
   var listEl = $("list"), detailEl = $("detail");
   $("pageurl").textContent = location.host + location.pathname;
   $("mcpurl").textContent = location.origin + "/mcp";
-  
-  // Bearer token handling
+
+  // ---------------------------------------------------------------- bearer token
   var BRIDGE_TOKEN_KEY = "bridge_auth_token";
   var token = sessionStorage.getItem(BRIDGE_TOKEN_KEY);
   if (!token) {
-    var promptToken = prompt("Enter your Bridge Bearer Token to access the dispatch board:");
+    var promptToken = prompt("Paste your TaskBridge bearer token to open the dispatch board:");
     if (promptToken) {
-      sessionStorage.setItem(BRIDGE_TOKEN_KEY, promptToken);
-      token = promptToken;
+      sessionStorage.setItem(BRIDGE_TOKEN_KEY, promptToken.trim());
+      token = promptToken.trim();
     } else {
-      document.body.innerHTML = '<div style="padding:40px;color:#f2ead8;font-family:system-ui;background:#14100b;height:100vh;display:flex;align-items:center;justify-content:center;text-align:center"><div><h2>Authentication Required</h2><p>Please refresh the page and enter your Bridge Bearer Token.</p></div></div>';
+      document.body.innerHTML =
+        '<div class="authwall"><div><pre>' +
+        '  ┌──────────────────────────┐\n' +
+        '  │  the board is locked     │\n' +
+        '  │  no bearer token present │\n' +
+        '  └──────────────────────────┘</pre>' +
+        '<p>The token lives in <span class="mono">.bridge-token</span> on the machine serving this page — ' +
+        'run <span class="mono">taskbridge token</span> to print it, then reload and paste it.</p></div></div>';
       return;
     }
   }
-  
-  // Show auth status
-  $("authstatus").textContent = "🔒 " + token.substring(0, 8) + "...";
-  $("authstatus").title = "Click to change token";
-  $("authstatus").style.cursor = "pointer";
+  function paintAuth(){
+    $("authstatus").textContent = "● " + token.substring(0, 8) + "…";
+    $("authstatus").title = "click to change token";
+  }
+  paintAuth();
   $("authstatus").onclick = function() {
     var newToken = prompt("Enter Bridge Bearer Token:", token);
     if (newToken && newToken.trim()) {
       sessionStorage.setItem(BRIDGE_TOKEN_KEY, newToken.trim());
       token = newToken.trim();
-      $("authstatus").textContent = "🔒 " + token.substring(0, 8) + "...";
+      paintAuth();
       location.reload();
     }
   };
-  
+
+  // ---------------------------------------------------------------- theme
+  var THEME_KEY = "bridge_theme";
+  var themeMeta = document.querySelector('meta[name="theme-color"]');
+  function isLight(){ return document.documentElement.dataset.theme === "light"; }
+  function paintTheme(){
+    var light = isLight();
+    var label = light ? "Switch to night mode" : "Switch to day mode";
+    $("theme").setAttribute("aria-label", label);
+    $("theme").setAttribute("title", label);
+    if (themeMeta) themeMeta.setAttribute("content", light ? "#ece3cd" : "#14100b");
+  }
+  $("theme").addEventListener("click", function(){
+    if (isLight()) delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = "light";
+    try { localStorage.setItem(THEME_KEY, isLight() ? "light" : "dark"); } catch(e){}
+    paintTheme();
+  });
+  paintTheme();
+
+  // ---------------------------------------------------------------- helpers
   function esc(s){
-    // Real HTML escaping (this output mostly lands in innerHTML slots).
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
-  function stamp(st){ return '<span class="stamp st-' + esc(st) + '">' + esc(st) + "</span>"; }
+  function stamp(st){ return '<span class="stamp st-' + esc(st) + '">' + esc(st) + '</span>'; }
+  var SIGIL = { pending: "[ ]", running: "[>]", waiting: "[?]", completed: "[#]",
+                failed: "[!]", cancelled: "[x]" };
+  function sigil(st){
+    st = String(st || "");
+    return '<span class="sig"><span class="g">' + esc(SIGIL[st] || "[·]") +
+           '</span><span class="word">' + esc(st) + "</span></span>";
+  }
+  function dno(id){
+    return '<span class="dno"><span class="nop">Nº</span> ' + esc(id) + "</span>";
+  }
+  function copyText(s, done){
+    function fallback(){
+      var ta = document.createElement("textarea");
+      ta.value = s; ta.setAttribute("readonly", "");
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch(e){}
+      ta.remove(); done();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(s).then(done, fallback);
+    } else { fallback(); }
+  }
   var ORIGIN_STYLE = {
     claude:   { label: "Claude",   color: "#d97757" },
     chatgpt:  { label: "ChatGPT",  color: "#6fd3b3" },
@@ -294,64 +712,290 @@
            'fill="none" stroke="' + c + '" stroke-width="1.4"/><text x="7" y="10" text-anchor="middle" ' +
            'font-size="7" fill="' + c + '" font-family="monospace">' + esc(o.slice(0, 1).toUpperCase()) + "</text></svg>";
   }
-  var lastStatus = "";
-  function auto(){ return $("auto").checked; }
-  async function jget(url){
-    var headers = {};
-    if (token) {
-      headers["Authorization"] = "Bearer " + token;
+
+  // ---------------------------------------------------------------- the printed wordmark
+  var WM = {
+    T: ["█████", "  █  ", "  █  ", "  █  ", "  █  "],
+    A: [" ███ ", "█   █", "█████", "█   █", "█   █"],
+    S: [" ████", "█    ", " ███ ", "    █", "████ "],
+    K: ["█   █", "█  █ ", "███  ", "█  █ ", "█   █"],
+    B: ["████ ", "█   █", "████ ", "█   █", "████ "],
+    R: ["████ ", "█   █", "████ ", "█  █ ", "█   █"],
+    I: ["█████", "  █  ", "  █  ", "  █  ", "█████"],
+    D: ["████ ", "█   █", "█   █", "█   █", "████ "],
+    G: [" ████", "█    ", "█  ██", "█   █", " ███ "],
+    E: ["█████", "█    ", "████ ", "█    ", "█████"]
+  };
+  function printWordmark(){
+    var pre = $("wordmark");
+    if (!pre) return;
+    var word = "TASKBRIDGE", rows = [[], [], [], [], []], i, r, c;
+    for (i = 0; i < word.length; i++) {
+      var g = WM[word[i]] || ["     ", "     ", "     ", "     ", "     "];
+      for (r = 0; r < 5; r++) {
+        for (c = 0; c < 5; c++) rows[r].push(g[r][c]);
+        if (i < word.length - 1) rows[r].push(" ");
+      }
     }
-    var r = await fetch(url, {cache: "no-store", headers: headers});
+    var cols = rows[0].length;
+    var cells = [[], [], [], [], []];
+    for (r = 0; r < 5; r++) {
+      var rowEl = document.createElement("span");
+      rowEl.className = "wm-row";
+      for (c = 0; c < cols; c++) {
+        var s = document.createElement("span");
+        s.className = "c";
+        s.textContent = rows[r][c];
+        if (rows[r][c] !== " ") cells[r].push(s);
+        rowEl.appendChild(s);
+      }
+      pre.appendChild(rowEl);
+    }
+    var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      for (r = 0; r < 5; r++) for (c = 0; c < cells[r].length; c++) cells[r][c].classList.add("on");
+      return;
+    }
+    var head = [], col = 0;
+    var timer = setInterval(function(){
+      for (r = 0; r < 5; r++) {
+        if (head[r]) head[r].classList.remove("hd");
+        if (cells[r][col]) { cells[r][col].classList.add("on"); cells[r][col].classList.add("hd"); }
+      }
+      head = [cells[0][col], cells[1][col], cells[2][col], cells[3][col], cells[4][col]];
+      col++;
+      if (col >= cols) {
+        clearInterval(timer);
+        for (r = 0; r < 5; r++) if (head[r]) head[r].classList.remove("hd");
+      }
+    }, 14);
+  }
+  printWordmark();
+
+  // ---------------------------------------------------------------- data plumbing
+  async function japi(url, body){
+    var headers = {};
+    if (token) headers["Authorization"] = "Bearer " + token;
+    var opts = { cache: "no-store", headers: headers };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      opts.method = "POST";
+      opts.body = JSON.stringify(body);
+    }
+    var r = await fetch(url, opts);
     if (r.status === 401) {
       sessionStorage.removeItem(BRIDGE_TOKEN_KEY);
       alert("Authentication failed. Token may be invalid or expired.");
       location.reload();
       throw new Error("Unauthorized");
     }
-    if (!r.ok) throw new Error(r.status + " " + url);
-    return r.json();
+    var data = null;
+    try { data = await r.json(); } catch(e) {}
+    if (!r.ok) throw new Error((data && data.error) || (r.status + " " + url));
+    return data || {};
   }
-  function fmtTime(iso){
-    if (!iso) return "–";
-    try { return new Date(iso).toLocaleString(); } catch(e){ return iso; }
+  async function jget(url){ return await japi(url); }
+  // ---------------------------------------------------------------- timestamps, one format
+  var MONTHS_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  function p2(n){ return (n < 10 ? "0" : "") + n; }
+  // "18 Oct 2026, 10:37:56" — always this shape, in the viewer's local timezone.
+  function stampDate(v){
+    if (v == null || v === "") return "–";
+    var d = (typeof v === "number") ? new Date(v < 1e12 ? v * 1000 : v)
+                                    : new Date(String(v).replace(" ", "T"));
+    if (isNaN(d.getTime())) return String(v);
+    return d.getDate() + " " + MONTHS_SHORT[d.getMonth()] + " " + d.getFullYear() + ", " +
+           p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+  }
+  // the raw stored value (UTC ISO, as filed) — for title tooltips.
+  function stampTitle(v){ return v == null || v === "" ? "" : String(v); }
+  function midTrunc(s, n){
+    s = String(s == null ? "" : s);
+    if (s.length <= n) return s;
+    var keep = n - 1, head = Math.ceil(keep * 0.55), tail = keep - head;
+    return s.slice(0, head) + "…" + s.slice(s.length - tail);
+  }
+  function badgeCount(text){
+    if (text == null) return { n: 0, words: false };
+    var s = String(text).trim();
+    if (!s) return { n: 0, words: false };
+    try {
+      var v = JSON.parse(s);
+      if (Array.isArray(v)) return { n: v.length, words: false };
+      if (v && typeof v === "object") return { n: Object.keys(v).length, words: false };
+      if (typeof v === "string") s = v.trim();
+    } catch(e){}
+    if (!s) return { n: 0, words: false };
+    return { n: s.split(/\s+/).filter(Boolean).length, words: true };
   }
   function setWire(line){
     if (line === lastWire) return;
     lastWire = line;
     var w = $("wiretext");
-    w.textContent = line || "wire quiet";
-    w.classList.toggle("short", (line || "").length < 90);
+    w.textContent = line ? "▸ " + line : "wire quiet";
+    w.classList.toggle("short", !line || line.length < 90);
   }
+  function setTally(id, n, zeroIsQuiet){
+    var el = $(id);
+    el.textContent = n;
+    el.classList.toggle("zero", zeroIsQuiet && !n);
+  }
+  function emptyBox(art, dir){
+    var d = document.createElement("div");
+    d.className = "empty";
+    var p = document.createElement("pre"); p.textContent = art;
+    var s = document.createElement("div"); s.className = "dir"; s.textContent = dir;
+    d.appendChild(p); d.appendChild(s);
+    return d;
+  }
+
+  // ---------------------------------------------------------------- worker model picker
+  var modelList = null, modelBusy = false, modelDefault = "";
+  function modelStatus(msg, cls){
+    var s = $("modelstatus");
+    s.textContent = msg || "";
+    s.className = "modal-status" + (cls ? " " + cls : "");
+  }
+  function renderModelList(){
+    var box = $("modellist");
+    box.innerHTML = "";
+    if (modelList == null) return;
+    var q = $("modelsearch").value.trim().toLowerCase();
+    var items = modelList.filter(function(m){ return !q || m.toLowerCase().indexOf(q) !== -1; });
+    if (!items.length) {
+      var e = document.createElement("div");
+      e.className = "modal-empty";
+      e.textContent = modelList.length
+        ? "No model matches \u201c" + $("modelsearch").value.trim() + "\u201d."
+        : "opencode reported no models.";
+      box.appendChild(e);
+      return;
+    }
+    items.forEach(function(m){
+      var row = document.createElement("div");
+      row.className = "mrow" + (m === modelDefault ? " sel" : "");
+      row.setAttribute("role", "option");
+      row.setAttribute("tabindex", "0");
+      row.setAttribute("aria-selected", m === modelDefault ? "true" : "false");
+      var n = document.createElement("span");
+      n.className = "mname"; n.textContent = m;
+      row.appendChild(n);
+      if (m === modelDefault) {
+        var t = document.createElement("span");
+        t.className = "tag"; t.textContent = "current";
+        row.appendChild(t);
+      }
+      function pick(){ applyModel(m); }
+      row.addEventListener("click", pick);
+      row.addEventListener("keydown", function(ev){
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); }
+      });
+      box.appendChild(row);
+    });
+  }
+  async function loadModels(force){
+    if (modelBusy) return;
+    modelBusy = true;
+    $("modelreload").disabled = true;
+    modelStatus(force ? "Re-asking opencode for its model list\u2026"
+                      : "Asking opencode for its model list\u2026");
+    try {
+      var r = await jget("api/models" + (force ? "?refresh=1" : ""));
+      modelList = r.models || [];
+      modelDefault = r.worker_default || modelDefault;
+      renderModelList();
+      if (modelDefault && modelList.indexOf(modelDefault) === -1) {
+        modelStatus("Current default " + modelDefault + " is not in opencode's list " +
+                    "any more \u2014 opencode will refuse it; pick a replacement.", "err");
+      } else {
+        modelStatus((r.count || modelList.length) +
+                    " models \u2014 click one to make it the worker default");
+      }
+    } catch(e) {
+      modelStatus("Could not list models: " + e.message, "err");
+    } finally {
+      modelBusy = false;
+      $("modelreload").disabled = false;
+    }
+  }
+  function openModelPanel(){
+    $("modelmodal").hidden = false;
+    $("modelsearch").value = "";
+    loadModels(false);
+    $("modelsearch").focus();
+  }
+  function closeModelPanel(){ $("modelmodal").hidden = true; }
+  async function applyModel(m){
+    if (modelBusy || m === modelDefault) return;
+    modelBusy = true;
+    $("modelreload").disabled = true;
+    modelStatus("Setting " + m + " \u2026");
+    try {
+      var r = await japi("api/model", { model: m });
+      modelDefault = r.worker_default || m;
+      renderModelList();
+      modelStatus("Saved \u2014 the engine now defaults to " + modelDefault + ". " + (r.note || ""), "ok");
+      overview();
+    } catch(e) {
+      modelStatus("Could not set model: " + e.message, "err");
+    } finally {
+      modelBusy = false;
+      $("modelreload").disabled = false;
+    }
+  }
+  $("modelbtn").addEventListener("click", openModelPanel);
+  $("modelclose").addEventListener("click", closeModelPanel);
+  $("modelmodal").addEventListener("click", function(ev){ if (ev.target === this) closeModelPanel(); });
+  $("modelreload").addEventListener("click", function(){ loadModels(true); });
+  $("modelsearch").addEventListener("input", renderModelList);
+  document.addEventListener("keydown", function(ev){
+    if (ev.key === "Escape" && !$("modelmodal").hidden) closeModelPanel();
+  });
+
   async function overview(){
     try {
       var o = await jget("api/overview");
       var c = o.counts || {};
-      $("c-pending").textContent = c.pending || 0;
-      $("c-running").textContent = c.running || 0;
-      $("c-waiting").textContent = c.waiting || 0;
-      $("c-done").textContent = (c.completed||0) + (c.failed||0) + (c.cancelled||0);
+      setTally("c-pending", c.pending || 0, true);
+      setTally("c-running", c.running || 0, true);
+      setTally("c-waiting", c.waiting || 0, true);
+      setTally("c-done", (c.completed||0) + (c.failed||0) + (c.cancelled||0), true);
       var hb = o.heartbeat || {};
+      modelDefault = o.worker_default || hb.default_model || modelDefault;
+      $("modelbtntext").textContent = modelDefault || "Model";
+      $("modelbtn").title = modelDefault
+        ? "Worker default model: " + modelDefault + " — click to change"
+        : "Set the worker's default model";
       $("wpill").textContent = hb.alive
         ? "engine alive · " + (hb.default_model || "") + " · heard " + hb.age_sec + "s ago"
-        : "engine OFFLINE — tasks will pile up, restart the worker";
+        : "engine offline";
       var d = $("wdot");
       d.className = "lamp " + (hb.alive ? "on" : "off");
+      var offb = $("offbanner");
+      if (offb) offb.hidden = !!hb.alive;
       var recent = o.recent || [];
       var run = recent.filter(function(t){ return t.status === "running"; })[0];
       var wait = recent.filter(function(t){ return t.status === "waiting"; })[0];
       var now = $("nowline");
-      if (run) { now.innerHTML = ""; now.appendChild(document.createTextNode("On the wire now: "));
-        var s = document.createElement("strong"); s.textContent = run.title || run.id; now.appendChild(s); }
-      else if (wait) { now.textContent = "Paused — a task needs an answer before it can continue. Open it below."; }
-      else { now.textContent = "Wire quiet — no task running. Submit one from Claude and it shows up here."; }
+      if (run) {
+        now.innerHTML = "";
+        now.appendChild(document.createTextNode("On the wire now: "));
+        var s = document.createElement("strong"); s.textContent = run.title || run.id;
+        now.appendChild(s);
+      } else if (wait) {
+        now.textContent = "Paused — a docket is waiting on an answer. Open it below.";
+      } else {
+        now.textContent = "Wire quiet — no docket running. Submit one from Claude and it shows up here.";
+      }
       var wm = $("wmeta");
       wm.innerHTML = "";
       [["Engine", hb.alive ? "alive" : "OFFLINE"], ["Last heard", hb.age_sec == null ? "–" : hb.age_sec + "s ago"],
        ["Working on", hb.current_task || "–"], ["Model", hb.default_model || o.worker_default || "–"]
       ].forEach(function(kv){
-        var el = document.createElement("span"); el.textContent = kv[0] + " ";
-        var cd = document.createElement("code"); cd.textContent = kv[1];
-        el.appendChild(cd); wm.appendChild(el);
+        var el = document.createElement("div"); el.className = "kv";
+        var k = document.createElement("span"); k.className = "k"; k.textContent = kv[0];
+        var v = document.createElement("span"); v.className = "v"; v.textContent = kv[1];
+        el.appendChild(k); el.appendChild(v); wm.appendChild(el);
       });
       renderList(recent);
       renderCjobs(o.claude_jobs || []);
@@ -363,11 +1007,19 @@
       }
     } catch(e) { /* keep old board on transient errors */ }
   }
+
   function renderList(tasks){
     var f = $("filter").value;
     var items = tasks.filter(function(t){ return f === "all" || t.status === f; });
-    if (!items.length) { listEl.innerHTML = ""; var e = document.createElement("div");
-      e.className = "empty"; e.textContent = "No " + f + " dockets on the board."; listEl.appendChild(e); return; }
+    if (!items.length) {
+      listEl.innerHTML = "";
+      listEl.appendChild(emptyBox(
+        " ┌──────────────────┐\n" +
+        " │ nothing on file  │\n" +
+        " └──────────────────┘",
+        "No " + (f === "all" ? "" : f + " ") + "dockets on the board. Ask Claude to submit one — it lands here in seconds."));
+      return;
+    }
     if (!sel) {
       var r = items.filter(function(t){ return t.status === "running"; })[0] ||
               items.filter(function(t){ return t.status === "waiting"; })[0];
@@ -378,40 +1030,64 @@
       var d = document.createElement("div");
       d.className = "task " + esc(t.status) + (t.id === sel ? " sel" : "");
       d.setAttribute("role", "button"); d.setAttribute("tabindex", "0");
-      var top = document.createElement("div"); top.className = "top";
+      if (t.id === sel) d.setAttribute("aria-current", "true");
+      var top = document.createElement("div"); top.className = "top r1";
       var mk = document.createElement("span"); mk.className = "omark";
       mk.title = "from " + originName(t.origin);
       mk.innerHTML = originSVG(t.origin);
-      var stw = document.createElement("span"); stw.innerHTML = stamp(t.status);
-      top.appendChild(mk); top.appendChild(stw);
-      var id = document.createElement("span"); id.className = "id mono"; id.textContent = t.id;
-      top.appendChild(id);
+      var id = document.createElement("span"); id.className = "dno";
+      id.innerHTML = '<span class="nop">Nº</span> ' + esc(t.id);
+      var lead = document.createElement("span"); lead.className = "leader";
+      var st = document.createElement("span"); st.innerHTML = sigil(t.status);
+      top.appendChild(mk); top.appendChild(id); top.appendChild(lead); top.appendChild(st);
       var title = document.createElement("div"); title.className = "t";
       title.textContent = t.title || "(untitled)";
-      var m = document.createElement("div"); m.className = "m mono";
-      m.textContent = (t.model || "default model") + " · attempt " + (t.attempts||0) + " · " +
-                      (t.updated_at||"").slice(0,19).replace("T"," ");
+      var m = document.createElement("div"); m.className = "m";
+      var cm = document.createElement("span"); cm.className = "cm";
+      cm.textContent = t.model || "default model";
+      cm.title = cm.textContent;
+      var sep1 = document.createElement("span"); sep1.className = "sep"; sep1.textContent = "·";
+      var ca = document.createElement("span"); ca.className = "cat";
+      ca.textContent = "attempt " + (t.attempts || 0);
+      var sep2 = document.createElement("span"); sep2.className = "sep"; sep2.textContent = "·";
+      var ct = document.createElement("span"); ct.className = "ct";
+      ct.textContent = stampDate(t.updated_at);
+      if (t.updated_at) ct.title = stampTitle(t.updated_at);
+      m.appendChild(cm); m.appendChild(sep1); m.appendChild(ca); m.appendChild(sep2); m.appendChild(ct);
       d.appendChild(top); d.appendChild(title); d.appendChild(m);
       d.addEventListener("click", function(){ select(t.id); });
       d.addEventListener("keydown", function(ev){ if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); select(t.id); } });
       listEl.appendChild(d);
     });
   }
+
   function renderCjobs(jobs){
     $("cj-count").textContent = jobs.length;
     var box = $("cjobs");
     box.innerHTML = "";
-    if (!jobs.length) { var e = document.createElement("div");
-      e.className = "empty"; e.textContent = "Nothing on the return wire yet."; box.appendChild(e); return; }
+    if (!jobs.length) {
+      var e = document.createElement("div");
+      e.className = "empty"; e.textContent = "Nothing on the return wire yet — Claude jobs running the other way print here.";
+      box.appendChild(e); return;
+    }
     jobs.forEach(function(j){
       var d = document.createElement("div");
       d.className = "cjob" + (j.id === cjobSel ? " sel" : "");
       d.setAttribute("role", "button"); d.setAttribute("tabindex", "0");
-      var head = document.createElement("div"); head.innerHTML = stamp(j.status) + " ";
-      var s = document.createElement("span"); s.textContent = (j.prompt||"").slice(0,140);
+      var head = document.createElement("div"); head.className = "jr1";
+      var sg = document.createElement("span"); sg.innerHTML = sigil(j.status);
+      var no = document.createElement("span"); no.className = "dno";
+      no.innerHTML = '<span class="nop">Nº</span> ' + esc(j.id);
+      var lead = document.createElement("span"); lead.className = "leader";
+      head.appendChild(sg); head.appendChild(no); head.appendChild(lead);
+      var s = document.createElement("span"); s.textContent = (j.prompt||"").slice(0, 120);
       head.appendChild(s);
-      var meta = document.createElement("div"); meta.className = "jm mono";
-      meta.textContent = j.id + " · " + j.backend + " · " + (j.created_at||"");
+      var meta = document.createElement("div"); meta.className = "jm";
+      var jb = document.createElement("span");
+      jb.textContent = (j.backend || "claude") + " · ";
+      var jt = document.createElement("span"); jt.textContent = stampDate(j.created_at);
+      if (j.created_at) jt.title = stampTitle(j.created_at);
+      meta.appendChild(jb); meta.appendChild(jt);
       d.appendChild(head); d.appendChild(meta);
       if (j.id === cjobSel && j.tail) {
         var pre = document.createElement("pre"); pre.textContent = j.tail;
@@ -423,6 +1099,7 @@
       box.appendChild(d);
     });
   }
+
   async function pullCjob(){
     if (!cjobSel) return;
     try {
@@ -434,6 +1111,7 @@
       }));
     } catch(e) {}
   }
+
   function select(id){
     sel = id; logOffset = 0; follow = true; lastStatus = "";
     detailEl.innerHTML = "";
@@ -442,93 +1120,165 @@
     detailEl.appendChild(e);
     pullDetail(true);
   }
+
   function preBlock(text){
     var pre = document.createElement("pre");
     pre.textContent = text || "";
     return pre;
   }
-  function rule(text){
-    var h = document.createElement("div"); h.className = "rule"; h.textContent = text;
+  function ruleEl(text, id){
+    var h = document.createElement("div"); h.className = "rule";
+    if (id) h.id = id;
+    var l = document.createElement("span"); l.className = "rule-l"; l.textContent = text;
+    var f = document.createElement("span"); f.className = "rule-f";
+    h.appendChild(l); h.appendChild(f);
     return h;
   }
+
   async function pullDetail(reset){
     if (!sel) return;
     try {
       var r = await jget("api/task?id=" + encodeURIComponent(sel) +
                          "&log_offset=" + logOffset + "&log_chars=30000");
       var t = r.task;
-      if (!t) { detailEl.innerHTML = ""; var nf = document.createElement("div");
+      if (!t) {
+        detailEl.innerHTML = "";
+        var nf = document.createElement("div");
         nf.className = "empty err"; nf.textContent = "Docket gone — it may have been filed away. Pick another.";
-        detailEl.appendChild(nf); return; }
+        detailEl.appendChild(nf); return;
+      }
       logOffset = r.next_offset;
       var logChunk = r.log || "";
       var logEl = document.getElementById("live-log");
       if (!reset && logEl && t.status !== lastStatus && lastStatus) {
-        // status flipped while watching (e.g. running -> completed):
-        // refresh the stamp, then rebuild once from the tail so the
-        // result sections appear and the printout ends at the finish.
+        // status flipped while watching (running -> completed): refresh the stamp,
+        // then rebuild once from the tail so result sections appear.
         var ds0 = document.getElementById("d-stamp"); if (ds0) ds0.innerHTML = stamp(t.status);
-        var rl0 = document.getElementById("d-rule");
+        var rl0 = document.getElementById("d-rule-l");
         if (rl0) rl0.textContent = r.done ? "Printout — final" : "Printing now — what the agent is doing";
         lastStatus = t.status;
         if (r.done) { logOffset = -1; pullDetail(true); return; }
       }
       if (reset || !logEl) {
         detailEl.innerHTML = "";
+        var head = document.createElement("div"); head.className = "d-head";
         var h = document.createElement("h2"); h.textContent = t.title || "(untitled)";
-        var sub = document.createElement("div"); sub.className = "did mono";
-        sub.textContent = t.id + " · opened " + fmtTime(t.created_at) + " · updated " + fmtTime(t.updated_at);
-        var bdiv = document.createElement("div"); bdiv.id = "d-stamp"; bdiv.innerHTML = stamp(t.status);
+        var seal = document.createElement("div"); seal.className = "d-seal";
+        seal.id = "d-stamp"; seal.innerHTML = stamp(t.status);
+        head.appendChild(h); head.appendChild(seal);
+        detailEl.appendChild(head);
+        var chip = document.createElement("button");
+        chip.type = "button"; chip.className = "dno-chip btn btn-secondary btn-sm";
+        chip.title = "copy task id";
+        chip.innerHTML = '<span class="nop">Nº</span><span class="val">' + esc(t.id) +
+                         '</span><span class="hint">copy</span>';
+        chip.addEventListener("click", function(){
+          copyText(t.id, function(){
+            var v = chip.querySelector(".val"); var old = v.textContent;
+            v.textContent = "copied"; v.style.color = "var(--seal)";
+            setTimeout(function(){ v.textContent = old; v.style.color = ""; }, 900);
+          });
+        });
+        detailEl.appendChild(chip);
+        var sub = document.createElement("div"); sub.className = "did";
+        var sd1 = document.createElement("span");
+        sd1.textContent = "opened " + stampDate(t.created_at);
+        if (t.created_at) sd1.title = stampTitle(t.created_at);
+        var sd2 = document.createElement("span");
+        sd2.textContent = " · updated " + stampDate(t.updated_at);
+        if (t.updated_at) sd2.title = stampTitle(t.updated_at);
+        sub.appendChild(sd1); sub.appendChild(sd2);
+        detailEl.appendChild(sub);
         var fb = document.createElement("div"); fb.className = "filedby";
         fb.innerHTML = originSVG(t.origin);
         var fl = document.createElement("span");
         fl.textContent = "from " + originName(t.origin) + (t.provider ? " · engine " + t.provider : "");
         fb.appendChild(fl);
+        detailEl.appendChild(fb);
         var meta = document.createElement("div"); meta.className = "docketmeta";
         [["Model", t.model || "engine default"], ["Attempt", t.attempts],
          ["Priority", t.priority], ["Permission", t.permission || "full"],
          ["Timeout", (t.timeout_sec||"") + "s"]].forEach(function(kv){
-          var sp = document.createElement("span"); sp.textContent = kv[0] + " ";
-          var cd = document.createElement("code"); cd.textContent = kv[1];
-          sp.appendChild(cd); meta.appendChild(sp);
+          var kd = document.createElement("div"); kd.className = "kv";
+          var kk = document.createElement("span"); kk.className = "k"; kk.textContent = kv[0];
+          var kvv = document.createElement("span"); kvv.className = "v"; kvv.textContent = kv[1];
+          kvv.title = String(kv[1]);
+          kd.appendChild(kk); kd.appendChild(kvv); meta.appendChild(kd);
         });
-        var wd = document.createElement("span"); wd.textContent = "Directory ";
-        var wdc = document.createElement("code"); wdc.textContent = t.working_dir || "(repo root)";
-        wd.appendChild(wdc); meta.appendChild(wd);
-        detailEl.appendChild(h); detailEl.appendChild(sub); detailEl.appendChild(bdiv); detailEl.appendChild(fb); detailEl.appendChild(meta);
+        var dirPath = t.working_dir || "(repo root)";
+        var wd = document.createElement("div"); wd.className = "kv dir";
+        var wdk = document.createElement("span"); wdk.className = "k"; wdk.textContent = "Directory";
+        var wdv = document.createElement("span"); wdv.className = "v";
+        wdv.textContent = midTrunc(dirPath, window.innerWidth < 700 ? 40 : 64); wdv.title = dirPath;
+        var wdc = document.createElement("button");
+        wdc.type = "button"; wdc.className = "btn btn-secondary btn-sm copybtn";
+        wdc.setAttribute("aria-label", "Copy directory path");
+        wdc.title = "copy directory";
+        wdc.innerHTML = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+        wdc.addEventListener("click", function(){
+          copyText(dirPath, function(){
+            wdc.innerHTML = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>';
+            setTimeout(function(){
+              wdc.innerHTML = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+            }, 1000);
+          });
+        });
+        wd.appendChild(wdk); wd.appendChild(wdv); wd.appendChild(wdc);
+        meta.appendChild(wd);
+        detailEl.appendChild(meta);
         lastStatus = t.status;
-        function det(title, text, open){
-          if (!text) return;
+        function det(title, text, open, unit, always){
+          if (!text && !always) return;
+          unit = unit || "item";
           var dd = document.createElement("details"); if (open) dd.open = true;
-          var sm = document.createElement("summary"); sm.textContent = title;
+          var sm = document.createElement("summary");
+          var st2 = document.createElement("span"); st2.textContent = title;
+          sm.appendChild(st2);
+          var bc = badgeCount(text);
+          var bg2 = document.createElement("span"); bg2.className = "badge";
+          if (bc.n === 0) bg2.textContent = "empty";
+          else if (bc.words) bg2.textContent = bc.n + (bc.n === 1 ? " word" : " words");
+          else bg2.textContent = bc.n + " " + (bc.n === 1 ? unit : unit + "s");
+          sm.appendChild(bg2);
           var bd = document.createElement("div"); bd.className = "body";
           bd.appendChild(preBlock(text));
           dd.appendChild(sm); dd.appendChild(bd); detailEl.appendChild(dd);
         }
-        det("Brief", t.instructions, false);
-        var prule = rule(r.done ? "Printout — final" : "Printing now — what the agent is doing");
-        prule.id = "d-rule";
+        det("Brief", t.instructions, false, "word", true);
+        var prule = ruleEl(r.done ? "Printout — final" : "Printing now — what the agent is doing");
+        var prl = prule.querySelector(".rule-l"); prl.id = "d-rule-l";
         detailEl.appendChild(prule);
         var bar = document.createElement("div"); bar.className = "logbar";
-        var fl = document.createElement("label");
+        var flabel = document.createElement("label"); flabel.className = "swlabel";
         var cb = document.createElement("input");
-        cb.type = "checkbox"; cb.checked = follow;
+        cb.type = "checkbox"; cb.className = "sw"; cb.checked = follow;
+        cb.setAttribute("role", "switch");
         cb.addEventListener("change", function(){ follow = cb.checked; });
-        fl.appendChild(cb); fl.appendChild(document.createTextNode(" Follow the printout"));
-        var off = document.createElement("span"); off.id = "log-off"; off.className = "mono";
-        var rs = document.createElement("button"); rs.textContent = "Reload full printout";
+        var ftr = document.createElement("span"); ftr.className = "swtrack";
+        ftr.setAttribute("aria-hidden", "true");
+        var fkn = document.createElement("span"); fkn.className = "swknob";
+        ftr.appendChild(fkn);
+        flabel.appendChild(cb); flabel.appendChild(ftr);
+        flabel.appendChild(document.createTextNode("Follow the printout"));
+        var off = document.createElement("span"); off.id = "log-off";
+        var rs = document.createElement("button");
+        rs.className = "btn btn-secondary btn-sm";
+        rs.innerHTML = '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>Reload full printout';
         rs.addEventListener("click", function(){ logOffset = 0; pullDetail(true); });
-        bar.appendChild(fl); bar.appendChild(off); bar.appendChild(rs);
+        bar.appendChild(flabel); bar.appendChild(off); bar.appendChild(rs);
         detailEl.appendChild(bar);
+        var idle = document.createElement("div");
+        idle.className = "logidle"; idle.id = "log-idle"; idle.hidden = true;
+        detailEl.appendChild(idle);
         logEl = document.createElement("pre");
         logEl.className = "paper"; logEl.id = "live-log";
         logEl.setAttribute("aria-live", "off");
         detailEl.appendChild(logEl);
-        det("Result", t.result, t.status === "completed");
-        if (t.error) det("Fault", t.error, true);
-        det("Summary slip", t.structured_json, false);
-        det("Questions held", t.questions_json, t.status === "waiting");
-        det("Postage (usage)", t.usage_json, false);
+        det("Result", t.result, t.status === "completed", null, false);
+        if (t.error) det("Fault", t.error, true, null, false);
+        det("Summary slip", t.structured_json, false, "field", true);
+        det("Questions held", t.questions_json, t.status === "waiting", "question", true);
+        det("Postage (usage)", t.usage_json, false, "field", true);
         var note = document.createElement("div");
         note.className = "note"; note.textContent = r.note || "";
         detailEl.appendChild(note);
@@ -538,16 +1288,51 @@
         logEl.textContent += logChunk;
         if (follow && (reset || atBottom)) logEl.scrollTop = logEl.scrollHeight;
       }
+      var started = !!logChunk || (r.total_bytes || 0) > 0 || (r.next_offset || 0) > 0;
       var offEl = document.getElementById("log-off");
-      if (offEl) offEl.textContent = "bytes " + (r.start_offset || 0) + "–" + r.next_offset +
-        " of " + r.total_bytes + (r.done ? " · filed" : " · still printing…");
+      if (offEl) offEl.textContent = started
+        ? "bytes " + (r.start_offset || 0) + "–" + r.next_offset + " of " + r.total_bytes +
+          (r.done ? " · filed" : " · still printing…")
+        : "";
+      var idleEl = document.getElementById("log-idle");
+      if (idleEl) {
+        var idleMsg = "";
+        if (!started) {
+          if (t.status === "pending") idleMsg = "Not started — waiting for the worker.";
+          else if (t.status === "cancelled") idleMsg = "Cancelled — the worker never started this one.";
+          else if (t.status === "completed") idleMsg = "Filed with no printout — the worker produced no output.";
+          else if (t.status === "failed") idleMsg = "Failed before any output was printed.";
+          else idleMsg = "Worker is starting this docket — output prints here.";
+        }
+        idleEl.hidden = !idleMsg;
+        if (idleMsg) idleEl.textContent = idleMsg;
+        if (logEl) logEl.hidden = !!idleMsg;
+      }
     } catch(e) { /* transient */ }
   }
+
+  var offCopyBtn = $("offcopy");
+  if (offCopyBtn) offCopyBtn.addEventListener("click", function(){
+    var cmd = ($("offcmd") || {}).textContent || "./tasks_cli.py restart-worker";
+    copyText(cmd, function(){
+      var lb = offCopyBtn.querySelector(".copy-label");
+      if (!lb) return;
+      var old = lb.textContent; lb.textContent = "Copied";
+      setTimeout(function(){ lb.textContent = old; }, 1100);
+    });
+  });
   $("filter").addEventListener("change", overview);
-  $("refresh").addEventListener("click", function(){ overview(); pullDetail(false); if (cjobSel) pullCjob(); });
-  setInterval(function(){ if (auto()) overview(); }, 3000);
-  setInterval(function(){ if (auto() && sel) pullDetail(false); }, 2000);
-  setInterval(function(){ if (auto() && cjobSel) pullCjob(); }, 4000);
+  $("refresh").addEventListener("click", function(){
+    var b = this;
+    if (b.disabled) return;
+    b.disabled = true; b.classList.add("is-loading"); b.setAttribute("aria-busy", "true");
+    Promise.allSettled([overview(), pullDetail(false), cjobSel ? pullCjob() : null]).then(function(){
+      b.disabled = false; b.classList.remove("is-loading"); b.removeAttribute("aria-busy");
+    });
+  });
+  setInterval(function(){ if ($("auto").checked) overview(); }, 3000);
+  setInterval(function(){ if ($("auto").checked && sel) pullDetail(false); }, 2000);
+  setInterval(function(){ if ($("auto").checked && cjobSel) pullCjob(); }, 4000);
   overview();
 })();
 </script>

@@ -1,7 +1,8 @@
 "use client";
 
-import { ChevronDown } from "lucide-react";
 import { useId, useState } from "react";
+import { AsciiTexture } from "@/components/ascii/AsciiTexture";
+import { AsciiRule } from "@/components/ui/AsciiRule";
 import { SectionHead } from "@/components/ui/SectionHead";
 import { Reveal } from "@/components/ui/Reveal";
 import { FAQ } from "@/lib/content";
@@ -11,11 +12,13 @@ export function Faq() {
   const base = useId();
 
   return (
-    <section id="faq" aria-labelledby="faq-title" className="border-t border-line">
+    <section id="faq" aria-labelledby="faq-title" className="relative isolate">
+      <AsciiRule />
+      <AsciiTexture variant="grid" />
       <div className="mx-auto grid max-w-6xl gap-12 px-5 py-24 sm:px-8 md:grid-cols-[1fr_1.6fr] md:gap-16 md:py-32">
         <SectionHead
           id="faq-title"
-          index="06"
+          index="07"
           kicker="Troubleshooting"
           title="When the line goes quiet."
           lede="Straight from the README's troubleshooting notes."
@@ -23,13 +26,14 @@ export function Faq() {
         />
 
         <Reveal>
-          <ul className="border-t border-line">
+          <AsciiRule />
+          <ul>
             {FAQ.map((item, i) => {
               const isOpen = open === i;
               const btnId = `${base}-q${i}`;
               const panelId = `${base}-a${i}`;
               return (
-                <li key={item.q} className="border-b border-line">
+                <li key={item.q} className="sep-b">
                   <h3>
                     <button
                       id={btnId}
@@ -43,11 +47,14 @@ export function Faq() {
                         <span className="mr-3 text-[11px] text-faint tabular-nums">{String(i + 1).padStart(2, "0")}</span>
                         {item.q}
                       </span>
-                      <ChevronDown
-                        size={16}
+                      <span
                         aria-hidden="true"
-                        className={`shrink-0 text-faint transition-transform duration-300 ease-[var(--ease-out)] group-hover:text-signal ${isOpen ? "rotate-180 text-signal" : ""}`}
-                      />
+                        className={`shrink-0 font-mono text-[13px] transition-colors duration-200 group-hover:text-signal ${
+                          isOpen ? "text-signal" : "text-faint"
+                        }`}
+                      >
+                        {isOpen ? "[-]" : "[+]"}
+                      </span>
                     </button>
                   </h3>
                   <div

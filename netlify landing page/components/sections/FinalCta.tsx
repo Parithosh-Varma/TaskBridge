@@ -4,6 +4,7 @@ import { useScroll } from "motion/react";
 import { useRef } from "react";
 import { AsciiCanvas } from "@/components/ascii/AsciiCanvas";
 import { calmField } from "@/components/ascii/fields";
+import { AsciiRule } from "@/components/ui/AsciiRule";
 import { CommandBlock } from "@/components/ui/CommandBlock";
 import { Reveal } from "@/components/ui/Reveal";
 import { StarButton } from "@/components/ui/StarButton";
@@ -15,7 +16,8 @@ export function FinalCta({ stars }: { stars: number }) {
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "center center"] });
 
   return (
-    <section ref={ref} aria-labelledby="cta-title" className="relative isolate overflow-hidden border-t border-line">
+    <section ref={ref} aria-labelledby="cta-title" className="relative isolate overflow-hidden">
+      <AsciiRule />
       <AsciiCanvas
         field={calmField}
         progress={scrollYProgress}
@@ -25,7 +27,7 @@ export function FinalCta({ stars }: { stars: number }) {
       />
       <Reveal className="mx-auto flex max-w-3xl flex-col items-center px-5 py-28 text-center sm:px-8 md:py-40">
         <span aria-hidden="true" className="font-mono text-[28px] text-signal glow-signal">
-          ◆
+          *
         </span>
         <h2
           id="cta-title"

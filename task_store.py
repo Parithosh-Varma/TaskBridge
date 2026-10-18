@@ -31,7 +31,7 @@ VALID_STATUSES = {"pending", "running", "completed", "failed", "cancelled", "wai
 
 # Model ids go into an argv slot (`opencode run --model <id>`); keep them to
 # plain identifier characters so a model value can't smuggle CLI flags or
-# whitespace. Real ids look like `opencode/cat-jam-free` or `qwen3-coder`.
+# whitespace. Real ids look like `opencode/deepseek-v4.1-flash-free` or `qwen3-coder`.
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:\-]{0,119}$")
 
 
@@ -240,6 +240,19 @@ def bump_attempt(task_id: str, model: str = "") -> dict:
         else:
             conn.execute("UPDATE tasks SET status='pending', updated_at=? WHERE id=?",
                          (now, task_id))
+    return get_task(task_id)
+
+
+def rollback_attempt(task_id: str) -> dict:
+    """Un-count the latest attempt — for infrastructure faults (e.g. a retired
+    model) that never exercised the task, so max_retries counts real task
+    attempts only. Never goes below 0."""
+    with get_conn() as conn:
+        row = conn.execute("SELECT attempts FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not row:
+            raise KeyError(f"task not found: {task_id}")
+        attempts = max(0, (row["attempts"] or 0) - 1)
+        conn.execute("UPDATE tasks SET attempts=? WHERE id=?", (attempts, task_id))
     return get_task(task_id)
 
 

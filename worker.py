@@ -56,7 +56,18 @@ def _resolve_opencode_bin() -> str:
 OPENCODE_BIN = _resolve_opencode_bin()
 WORKER_VERSION = "2.0.0"
 # Free model that works without paid credits; override with WORKER_MODEL env.
-WORKER_MODEL = os.environ.get("WORKER_MODEL", "opencode/cat-jam-free")
+# Re-check with `opencode models` when free tiers rotate — retired ids make
+# `opencode run` fail with "Model unavailable".
+WORKER_MODEL = os.environ.get("WORKER_MODEL", "opencode/deepseek-v4.1-flash-free")
+# Ordered spares used ONLY when the requested/default model is retired or
+# refuses at runtime ("Model unavailable") — a dead id must not wedge the
+# queue. All free-tier, so a retirement never silently starts billing.
+FALLBACK_MODELS = (
+    "opencode/deepseek-v4.1-flash-free",
+    "opencode/glm-5.3-flash-free",
+    "opencode/mimo-v2.6-flash-free",
+    "opencode/nemotron-3.5-lightning-free",
+)
 CONFIG_PATH = HERE / "worker_config.json"
 LOG_FILE = HERE / "worker.log"
 LOGS_DIR = HERE / "task_logs"
@@ -96,7 +107,24 @@ def notify(title: str, message: str, sound: str = "Glass") -> None:
         log(f"notify failed (non-fatal): {e}")
 
 
-def heartbeat(claimed: int = 0, current_task: str = "") -> None:
+_hb_state = {"claimed": 0, "current_task": ""}
+HB_TICK_SEC = 30  # run_task refreshes liveness at this cadence so a long task
+                  # never looks dead (heartbeat staleness is 180s elsewhere)
+
+
+def heartbeat(claimed: int | None = None, current_task: str | None = None) -> None:
+    """Write heartbeat.json.
+
+    Args default to the current pass state, so the long-task loop can keep
+    liveness fresh mid-run with a bare heartbeat()."""
+    if claimed is None:
+        claimed = _hb_state["claimed"]
+    else:
+        _hb_state["claimed"] = claimed
+    if current_task is None:
+        current_task = _hb_state["current_task"]
+    else:
+        _hb_state["current_task"] = current_task
     try:
         HEARTBEAT_PATH.write_text(json.dumps({
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -356,12 +384,35 @@ def default_model() -> str:
     return WORKER_MODEL
 
 
+def all_opencode_models() -> list[str]:
+    """Every model `opencode models` reports — uncapped, deduped, CLI order.
+
+    The CLI reports 600+ models; use this when the whole list matters
+    (validation), and list_available_models() for API payloads.
+    """
+    try:
+        proc = subprocess.run(
+            [OPENCODE_BIN, "models"], capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        raise RuntimeError(f"could not list opencode models: {e}")
+    if proc.returncode != 0:
+        raise RuntimeError(f"`opencode models` failed: {(proc.stderr or '')[-300:]}")
+    seen: set[str] = set()
+    out: list[str] = []
+    for ln in (proc.stdout or "").splitlines():
+        m = ln.strip()
+        if "/" in m and m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
 def set_default_model(model: str) -> str:
     """Persist a new worker default model (validated against opencode models)."""
     model = (model or "").strip()
     if not model:
-        raise ValueError("model is required, e.g. 'opencode/cat-jam-free'")
-    available = list_available_models()
+        raise ValueError("model is required, e.g. 'opencode/deepseek-v4.1-flash-free'")
+    available = all_opencode_models()
     if model not in available:
         close = [m for m in available if model.lower() in m.lower()][:5]
         raise ValueError(f"unknown model '{model}'. Did you mean one of: {close or available[:5]}?")
@@ -371,17 +422,99 @@ def set_default_model(model: str) -> str:
 
 def list_available_models(search: str = "", limit: int = 100) -> list[str]:
     """All models opencode can run. Optional case-insensitive filter."""
-    try:
-        proc = subprocess.run(
-            [OPENCODE_BIN, "models"], capture_output=True, text=True, timeout=60)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        raise RuntimeError(f"could not list opencode models: {e}")
-    if proc.returncode != 0:
-        raise RuntimeError(f"`opencode models` failed: {(proc.stderr or '')[-300:]}")
-    models = [ln.strip() for ln in (proc.stdout or "").splitlines() if "/" in ln.strip()]
+    models = all_opencode_models()
     if search:
         models = [m for m in models if search.lower() in m.lower()]
     return models[:max(1, min(limit, 200))]
+
+
+# ---------------- model resilience ----------------
+# A retired model id must never take the queue down: pins and the configured
+# default are checked against `opencode models` and rerouted to a runnable
+# candidate. When the list itself can't be read, requests pass through
+# unchanged — we never guess a replacement.
+
+_MODEL_CACHE: dict = {"ts": 0.0, "models": frozenset()}
+_MODEL_CACHE_TTL_SEC = 300
+_MODEL_NOTIFIED: set = set()
+
+
+def _valid_models() -> set[str] | None:
+    """Model ids `opencode models` reports, cached per 300s.
+
+    Returns None when the list can't be read — callers must then honor the
+    request unchanged instead of rerouting."""
+    now = time.time()
+    if _MODEL_CACHE["models"] and now - _MODEL_CACHE["ts"] <= _MODEL_CACHE_TTL_SEC:
+        return set(_MODEL_CACHE["models"])
+    try:
+        models = frozenset(all_opencode_models())
+    except RuntimeError as e:
+        log(f"model list unavailable ({e}) — retirement checks skipped")
+        return None
+    if not models:
+        return None
+    _MODEL_CACHE["models"], _MODEL_CACHE["ts"] = models, now
+    return set(models)
+
+
+def _model_candidates(requested: str = "") -> list[str]:
+    """Preferred run order: task's own model, configured default, builtin,
+    then the free spares. Deduped, order preserved."""
+    out: list[str] = []
+    for m in ((requested or "").strip(), default_model(), WORKER_MODEL,
+              *FALLBACK_MODELS):
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
+def resolve_model(requested: str = "") -> tuple[str, str]:
+    """Pick a model opencode can actually run. Returns (model, note).
+
+    A retired id is skipped in favor of the next runnable candidate; the note
+    names the swap ("" when nothing was swapped)."""
+    first = (requested or "").strip() or default_model()
+    valid = _valid_models()
+    if valid is None:
+        return first, ""
+    for m in _model_candidates(requested):
+        if m in valid:
+            if m == first:
+                return m, ""
+            return m, f"model {first!r} is retired/unavailable — using {m}"
+    return first, ""
+
+
+def next_fallback_model(after: str) -> str:
+    """First runnable candidate that is NOT the model that just failed.
+
+    Used after a runtime "Model unavailable": every reroute moves to a
+    strictly different model, so rerun chains are bounded and cannot loop.
+    """
+    valid = _valid_models()
+    for m in _model_candidates(""):
+        if m == after:
+            continue
+        if valid is None or m in valid:
+            return m
+    return ""
+
+
+def _looks_like_model_fault(output: str) -> bool:
+    """opencode refuses retired/unknown ids with 'Model unavailable: <id>'."""
+    return "Model unavailable" in (output or "")
+
+
+def _notify_model_reroute(dead: str, replacement: str) -> None:
+    """Tell the human once per (dead -> replacement) pair per worker pass."""
+    key = (dead, replacement)
+    if key in _MODEL_NOTIFIED:
+        return
+    _MODEL_NOTIFIED.add(key)
+    notify("TaskBridge: model switched",
+           f"{dead} is unavailable — running on {replacement} instead. "
+           f"Pick a new default on the dispatch board.", sound="Basso")
 
 
 # ---------------- snapshots & diffs ----------------
@@ -629,12 +762,15 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
     import selectors as _selectors
     tid = task["id"]
     workdir = task.get("_cwd") or str(HERE)
-    model = (task.get("model") or "").strip()
-    if model and not task_store._MODEL_ID.fullmatch(model):
+    pinned = (task.get("model") or "").strip()
+    if pinned and not task_store._MODEL_ID.fullmatch(pinned):
         # argv safety: a model string that could pass CLI flags is not a model
-        print(f"task {tid}: invalid model {model!r} — falling back to worker default", flush=True)
-        model = ""
-    model = model or default_model()
+        print(f"task {tid}: invalid model {pinned!r} — falling back to worker default", flush=True)
+        pinned = ""
+    model, model_note = resolve_model(pinned)
+    if model_note:
+        log(f"{tid}: {model_note}")
+        _notify_model_reroute(pinned or default_model(), model)
     timeout = max(30, min(int(task.get("timeout_sec") or 600), 1800))
     permission = task.get("permission") or "full"
     # Enforcement truth table (verified by probing, Oct 2026):
@@ -682,6 +818,7 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
             sel.register(proc.stdout, _selectors.EVENT_READ)
             buf = b""
             killed = False
+            hb_next = t0 + HB_TICK_SEC
             while True:
                 if proc.poll() is not None:
                     break
@@ -693,6 +830,11 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
                         pass
                     killed = True
                     break
+                if time.time() >= hb_next:
+                    # keep liveness fresh mid-task: without this a long task
+                    # (up to 30 min) looks like a dead worker to the board
+                    heartbeat()
+                    hb_next = time.time() + HB_TICK_SEC
                 # wait up to 1s for output; the loop above re-checks the deadline
                 # even when the child is completely silent (blocking readline can't)
                 for key, _ in sel.select(timeout=1.0):
@@ -760,8 +902,13 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
     output = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", output)
     if rc != 0:
         detail = output[-2000:] if output else f"exit {rc} with no output"
-        return {"ok": False, "error": f"opencode exited {rc}: {detail}",
-                "model": model, "latency_ms": latency_ms, "enforced": enforced}
+        outcome = {"ok": False, "error": f"opencode exited {rc}: {detail}",
+                   "model": model, "latency_ms": latency_ms, "enforced": enforced}
+        if _looks_like_model_fault(output):
+            # infrastructure fault, not a task fault — process_one reroutes
+            # to another model without spending the task's retry budget
+            outcome["model_fault"] = True
+        return outcome
     if not output:
         return {"ok": False, "error": "opencode produced no output",
                 "model": model, "latency_ms": latency_ms, "enforced": enforced}
@@ -826,7 +973,23 @@ def process_one(task: dict) -> None:
              "attempts": attempt_no,
              "permission": task.get("permission") or "full",
              "sandbox_enforced": outcome.get("enforced", False)}
+    pinned_for_usage = (task.get("model") or "").strip()
+    if pinned_for_usage and pinned_for_usage != (outcome.get("model") or ""):
+        usage["model_rerouted_from"] = pinned_for_usage  # retired pin, see resolve_model
     if not outcome["ok"]:
+        if outcome.get("model_fault"):
+            reroute_to = next_fallback_model(outcome.get("model") or "")
+            if reroute_to:
+                task_store.bump_attempt(tid, model=reroute_to)
+                try:
+                    task_store.rollback_attempt(tid)  # infra fault, not a task attempt
+                except KeyError:
+                    pass
+                log(f"{tid}: model {outcome.get('model')!r} unavailable — rerouting "
+                    f"to {reroute_to} (no task retry used)")
+                _notify_model_reroute(outcome.get("model") or "?", reroute_to)
+                teardown_worktree(task, task["_cwd"], success=False)
+                return
         max_retries = int(task.get("max_retries") or 0)
         if attempt_no <= max_retries:
             retry_model = (task.get("retry_model") or "").strip() or outcome.get("model", "")
@@ -917,7 +1080,7 @@ def main() -> int:
     pending = [t for t in pending if t.get("created_by") in ("claude", "chatgpt")]
     pending.sort(key=lambda t: (-int(t.get("priority") or 0), t.get("created_at") or ""))
     claimed = 0
-    heartbeat(0)
+    heartbeat(0, current_task="")
     for task in pending:
         if claimed >= MAX_TASKS_PER_PASS:
             break
@@ -939,8 +1102,8 @@ def main() -> int:
             except Exception as e2:
                 log(f"{tid}: write-back failed: {e2}")
             log(f"{tid}: worker crashed: {err[:200]}")
-        heartbeat(claimed)
-    heartbeat(claimed)
+        heartbeat(claimed, current_task="")
+    heartbeat(claimed, current_task="")
     return 0
 
 
