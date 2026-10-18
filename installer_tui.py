@@ -231,6 +231,9 @@ def ask_secret(hint: str) -> str | None:
             return None
         quiet = list(attrs)
         quiet[3] = attrs[3] & ~termios.ECHO
+        # Disable bracketed paste (ESC[?2004) so a pasted Authtoken arrives as
+        # plain text instead of being wrapped in ESC[200~ … ESC[201~ markers.
+        writer.write("\x1b[?2004l")
         writer.write(f"{hint}\n\033[1m❯\033[0m ")
         writer.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, quiet)
@@ -240,7 +243,8 @@ def ask_secret(hint: str) -> str | None:
             termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
             writer.write("\n")
             writer.flush()
-        return line.strip()
+        # Strip markers defensively in case the terminal emits them anyway.
+        return line.replace("\x1b[200~", "").replace("\x1b[201~", "").strip()
     finally:
         reader.close()
         writer.close()
@@ -384,7 +388,7 @@ class PlainUi(BaseUi):
         print(f"  {self._c(question, self.facts.theme['paper'], True)}")
         if hint:
             print(f"  {self._c(hint, self.facts.theme['faint'])}")
-        return ask_secret("  Authtoken (input hidden, Enter to skip)")
+        return ask_secret("  Authtoken (paste is hidden — press Enter when done)")
 
     def note(self, text: str) -> None:
         print(f"  {self._c(text, self.facts.theme['faint'])}")
@@ -571,7 +575,7 @@ def build_live_ui(facts: Facts):
                     title_align="left",
                 )
             )
-            return ask_secret("Authtoken (input hidden · Enter to skip)")
+            return ask_secret("Authtoken (paste is hidden — press Enter when done)")
 
         def note(self, text: str) -> None:
             self._with_live_paused(lambda: self.console.print(Text(text, style="tb.faint")))
