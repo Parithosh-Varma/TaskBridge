@@ -22,6 +22,7 @@ enforced) | no-shell (prompt-level only, recorded honestly).
 Logs to worker.log. macOS banner on completion / failure / question.
 """
 from __future__ import annotations
+import hashlib
 import json
 import os
 import re
@@ -202,7 +203,11 @@ def _orphan_looks_like_ours(pid: int, tid: str) -> tuple[bool, str]:
     return True, cmd[:80]
 
 
-TITLE_PREFIX = "br-"  # argv marker: --title br-<tid>-a<n>.
+# argv marker: --title br-<repo-tag>-<tid>-a<n>. The repo tag namespaces the
+# marker to THIS checkout so a worker in one clone never mistakes another
+# clone's processes for its own strays (both share the host process table).
+REPO_TAG = hashlib.sha1(str(HERE.resolve()).encode("utf-8")).hexdigest()[:8]
+TITLE_PREFIX = f"br-{REPO_TAG}-"
 # --title is ps-visible and (unlike --session) works with the opencode free
 # tier: any explicit --session makes `opencode run` reject free models with
 # "free tier can only be used from within OpenCode" (probed Oct 2026).
@@ -334,7 +339,7 @@ def _sweep_tagged_strays() -> int:
     procs = _ps_snapshot()
     if not procs:
         return 0
-    pat = _re.compile(rf"{TITLE_PREFIX}([0-9a-f]{{12}})-a\d+")
+    pat = _re.compile(rf"{_re.escape(TITLE_PREFIX)}([0-9a-f]{{12}})-a\d+")
     by_task: dict[str, list[int]] = {}
     for pid, _ppid, cmd in procs:
         m = pat.search(cmd)
@@ -347,7 +352,13 @@ def _sweep_tagged_strays() -> int:
         try:
             status = task_store.get_task(tid)["status"]
         except KeyError:
-            status = "missing"
+            # Not in THIS checkout's queue: almost certainly another
+            # TaskBridge instance on the same host. Never kill what we don't
+            # own — this was the cross-clone false-positive that SIGKILLed
+            # live tasks. Genuinely deleted-task orphans are the pidfile
+            # reaper's jurisdiction while the row still exists.
+            log(f"{tid}: stray sweep skipped — task not in this queue")
+            continue
         if status == "running":
             continue
         fresh: list[int] = []  # re-validate marker per pid (pid-reuse safety)
