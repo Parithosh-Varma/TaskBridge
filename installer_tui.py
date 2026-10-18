@@ -278,6 +278,7 @@ class Facts:
     public_url: str = ""
     tunnel_state: str = ""
     opencode_cli: bool = True
+    worker_state: str = ""
     started: float = field(default_factory=time.monotonic)
 
 
@@ -865,6 +866,26 @@ def ensure_tunnel(ui: BaseUi, step: Step, port: int) -> tuple[str, str]:
     )
 
 
+def ensure_worker_daemon() -> str:
+    """Start the background worker so the engine is never offline.
+
+    On macOS this restarts the LaunchAgent; elsewhere it starts the detached
+    process loop. Idempotent: an already-running worker is left alone.
+    """
+    try:
+        import worker_supervisor
+        res = worker_supervisor.ensure_started()
+    except Exception as exc:  # never fail the install over the worker
+        return f"not started ({type(exc).__name__}: {exc})"
+    outcome = res.get("outcome") or "unknown"
+    return {
+        "started": "started · background worker loop",
+        "already_running": "already running",
+        "skipped_healthy": "already running",
+        "restarted": "restarted",
+    }.get(outcome, outcome)
+
+
 def run_setup(ui: BaseUi, facts: Facts, args: argparse.Namespace) -> None:
     track = Tracker(ui)
 
@@ -908,6 +929,12 @@ def run_setup(ui: BaseUi, facts: Facts, args: argparse.Namespace) -> None:
         else:
             step.state = "warn"
             step.detail = "not on PATH — the worker needs it, the server does not"
+
+    with track.step("engine", "background worker", "starting the worker…") as step:
+        facts.worker_state = ensure_worker_daemon()
+        if facts.worker_state.startswith("not started"):
+            step.state = "warn"
+        step.detail = facts.worker_state
 
 
 # --------------------------------------------------------------------------- #

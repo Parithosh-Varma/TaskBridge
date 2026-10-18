@@ -63,7 +63,8 @@ def main() -> int:
     sub.add_parser("heartbeat", help="show worker heartbeat file")
 
     rw = sub.add_parser("restart-worker",
-                        help="restart the worker via launchd (skips if healthy)")
+                        help="restart the worker via its supervisor (launchd on "
+                             "macOS, process loop elsewhere; skips if healthy)")
     rw.add_argument("--force", action="store_true",
                     help="restart even when the worker is healthy")
     rw.add_argument("--timeout", type=int, default=None,

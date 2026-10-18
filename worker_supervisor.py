@@ -51,6 +51,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -68,6 +69,9 @@ DEFAULT_MAX_STALE_SEC = 180
 DEFAULT_GRACE_SEC = 20
 LAUNCHCTL_TIMEOUT_SEC = 30
 STATE_HISTORY = 5
+# Process-backend (non-launchd) loop: one worker pass per interval, well under
+# the 180s staleness threshold so the dashboard engine lamp stays green.
+DEFAULT_LOOP_INTERVAL_SEC = 60
 # An eligible task must predate the last pass by at least this much before the
 # queue counts as "demonstrably stalled" (>2 launchd passes).
 STALL_MIN_AGE_SEC = 120
@@ -93,6 +97,19 @@ def _clamp(value, low: int, high: int, fallback: int) -> int:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this pid currently exists."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _parse_ts(value) -> datetime | None:
@@ -151,14 +168,18 @@ class Supervisor:
         state_path: str | Path | None = None,
         restart_log_path: str | Path | None = None,
         worker_log_path: str | Path | None = None,
+        daemon_pid_path: str | Path | None = None,
+        daemon_log_path: str | Path | None = None,
         queue_snapshot=None,
         runner=None,
+        spawner=None,
         clock=time.time,
         sleeper=time.sleep,
         cooldown_sec: int | None = None,
         timeout_sec: int | None = None,
         max_stale_sec: int | None = None,
         grace_sec: int | None = None,
+        loop_interval_sec: int | None = None,
     ):
         self.repo_dir = Path(repo_dir).resolve() if repo_dir else HERE
         self._label_override = label or ""
@@ -168,7 +189,12 @@ class Supervisor:
             if launch_agents_dir
             else Path.home() / "Library" / "LaunchAgents"
         )
-        self.launchctl = str(launchctl or os.environ.get("TASKBRIDGE_LAUNCHCTL") or DEFAULT_LAUNCHCTL)
+        # Remember whether the caller pinned launchctl explicitly: an explicit
+        # (but unusable) path keeps the launchd error path, while a plain POSIX
+        # host with no launchctl falls back to the process backend.
+        self._launchctl_override = str(
+            launchctl or os.environ.get("TASKBRIDGE_LAUNCHCTL") or "")
+        self.launchctl = self._launchctl_override or DEFAULT_LAUNCHCTL
         self.uid = int(uid if uid is not None else os.getuid())
         self.heartbeat_path = Path(
             heartbeat_path or os.environ.get("TASKBRIDGE_HEARTBEAT_PATH")
@@ -192,9 +218,21 @@ class Supervisor:
         self.worker_log_path = Path(
             worker_log_path or self.repo_dir / "worker.launchd.log"
         )
+        self.daemon_pid_path = Path(
+            daemon_pid_path or os.environ.get("TASKBRIDGE_DAEMON_PID_PATH")
+            or self.repo_dir / ".worker_daemon.pid"
+        )
+        self.daemon_log_path = Path(
+            daemon_log_path or self.repo_dir / "worker.launchd.log"
+        )
         self.runner = runner or subprocess.run
+        self.spawner = spawner or subprocess.Popen
         self.clock = clock
         self.sleeper = sleeper
+        self.loop_interval_sec = _clamp(
+            loop_interval_sec if loop_interval_sec is not None
+            else os.environ.get("TASKBRIDGE_LOOP_INTERVAL_SEC"),
+            5, 3600, DEFAULT_LOOP_INTERVAL_SEC)
         self.cooldown_sec = _clamp(
             cooldown_sec if cooldown_sec is not None
             else os.environ.get("TASKBRIDGE_RESTART_COOLDOWN_SEC"),
@@ -247,6 +285,93 @@ class Supervisor:
         fallback = f"gui/{self.uid}"
         self._domain_cache = fallback
         return fallback
+
+    def backend(self) -> str:
+        """Which supervisor this host uses: ``launchd`` | ``process`` | ``unavailable``.
+
+        ``launchd`` when a usable launchctl is configured (macOS), ``process``
+        for a detached worker loop on other POSIX hosts. A caller that pins an
+        explicit launchctl path keeps the launchd code path so misconfiguration
+        is reported as such instead of silently switching backends.
+        """
+        forced = (os.environ.get("TASKBRIDGE_SUPERVISOR_BACKEND") or "").strip().lower()
+        if forced in ("launchd", "process", "unavailable"):
+            return forced
+        if os.path.isabs(self.launchctl) and os.access(self.launchctl, os.X_OK):
+            return "launchd"
+        if self._launchctl_override:
+            return "launchd"
+        if os.name == "posix":
+            return "process"
+        return "unavailable"
+
+    # ----------------------------------------------------- process backend
+
+    def _daemon_pid(self) -> int | None:
+        try:
+            pid = int(self.daemon_pid_path.read_text().strip())
+        except (OSError, ValueError):
+            return None
+        return pid if pid > 0 else None
+
+    def daemon_alive(self) -> bool:
+        """True while the detached process-loop supervisor is running."""
+        pid = self._daemon_pid()
+        return bool(pid and pid != os.getpid() and _pid_alive(pid))
+
+    def _stop_process_loop(self) -> None:
+        """Stop a previously started loop so restarts never stack processes."""
+        pid = self._daemon_pid()
+        if pid and pid != os.getpid() and _pid_alive(pid):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except OSError:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    pass
+            deadline = self.clock() + 5
+            while self.clock() < deadline and _pid_alive(pid):
+                self.sleeper(0.2)
+            if _pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        try:
+            self.daemon_pid_path.unlink()
+        except OSError:
+            pass
+
+    def _start_process_loop(self) -> tuple[bool, str | None]:
+        """Launch the detached ``worker_supervisor.py --daemon`` loop."""
+        try:
+            log = open(self.daemon_log_path, "ab")
+        except OSError as e:
+            return False, f"cannot open {self.daemon_log_path}: {type(e).__name__}"
+        env = dict(os.environ)
+        env["TASKBRIDGE_REPO_DIR"] = str(self.repo_dir)
+        env["TASKBRIDGE_DAEMON_PID_PATH"] = str(self.daemon_pid_path)
+        try:
+            proc = self.spawner(
+                [sys.executable, str(HERE / "worker_supervisor.py"), "--daemon",
+                 "--interval", str(self.loop_interval_sec)],
+                cwd=str(self.repo_dir), env=env, stdin=subprocess.DEVNULL,
+                stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+            )
+        except OSError as e:
+            log.close()
+            return False, f"spawn failed: {type(e).__name__}: {e}"
+        finally:
+            try:
+                log.close()
+            except OSError:
+                pass
+        try:
+            self.daemon_pid_path.write_text(str(proc.pid))
+        except OSError:
+            pass
+        return True, None
 
     # -------------------------------------------------------------- discovery
 
@@ -762,6 +887,14 @@ class Supervisor:
 
     def _restart_locked(self, *, force: bool, timeout: int, max_stale: int,
                         t0: float, logs: list[str]) -> dict:
+        if self.backend() == "process":
+            return self._process_restart_locked(
+                force=force, timeout=timeout, max_stale=max_stale, t0=t0, logs=logs)
+        return self._launchd_restart_locked(
+            force=force, timeout=timeout, max_stale=max_stale, t0=t0, logs=logs)
+
+    def _launchd_restart_locked(self, *, force: bool, timeout: int, max_stale: int,
+                                t0: float, logs: list[str]) -> dict:
         def elapsed_ms() -> int:
             return int((self.clock() - t0) * 1000)
 
@@ -953,6 +1086,116 @@ class Supervisor:
             service_state_after=self._svc_summary(svc_after),
             worker_pid=worker_pid or svc_after.get("pid"), outcome="restart_timeout",
             error=err, elapsed_ms=elapsed_ms(), queue_evidence=evidence,
+             logs=logs + [f"worker log: {line}" for line in tail],
+             next_steps=self._failure_next_steps("restart_timeout", err))
+
+    def _process_restart_locked(self, *, force: bool, timeout: int, max_stale: int,
+                                t0: float, logs: list[str]) -> dict:
+        """Restart via the detached process loop (non-macOS / no launchd)."""
+        def elapsed_ms() -> int:
+            return int((self.clock() - t0) * 1000)
+
+        hb_before = self.heartbeat(max_stale)
+        queue_before = self.queue_snapshot()
+        in_pass = self.pass_in_progress()
+        stalled = self._stalled_evidence(hb_before, queue_before)
+        status = "healthy" if hb_before["alive"] else "offline"
+        diagnosis = ("worker is online and checking in" if status == "healthy"
+                     else "worker is offline — queue will not drain")
+        if status == "healthy" and stalled["stalled"]:
+            diagnosis = "worker online but not processing queued work"
+        logs.append(f"status={status} backend=process pass_in_progress={in_pass} "
+                    f"stalled={stalled['stalled']}")
+
+        common = dict(
+            previous_status=status,
+            heartbeat_before=self._hb_summary(hb_before),
+            service_label=None,
+            service_state_before=None,
+            diagnosis=diagnosis,
+            interrupted_pass_possible=in_pass,
+            stalled=bool(stalled.get("stalled")),
+            stall_reason=stalled.get("reason"),
+        )
+
+        if status == "healthy" and not stalled["stalled"] and not force:
+            self._log(f"skipped: worker healthy (heartbeat {hb_before['age_sec']}s old)")
+            return self._result(
+                **common, success=True, restart_attempted=False,
+                restart_method="none", verified=True, outcome="skipped_healthy",
+                worker_pid=hb_before.get("pid"), elapsed_ms=elapsed_ms(), logs=logs,
+                cooldown_remaining_sec=self._cooldown_remaining(self._read_state()),
+                next_steps=["Worker is healthy — no restart needed. "
+                            "Re-run with force=true only to interrupt deliberately."])
+
+        if force and status == "healthy":
+            common["diagnosis"] = (
+                "force=true: intentionally restarting a healthy worker; "
+                "an active task may be interrupted (queued work is preserved "
+                "and stale runs are re-queued by the worker reaper)")
+
+        state = self._read_state()
+        remaining = self._cooldown_remaining(state)
+        if remaining:
+            self._log(f"rate limited: {remaining}s of cooldown remain "
+                      f"(last outcome: {state.get('last_outcome')})")
+            return self._result(
+                **common, success=False, restart_attempted=False,
+                restart_method="none", outcome="rate_limited",
+                cooldown_remaining_sec=remaining, elapsed_ms=elapsed_ms(), logs=logs,
+                next_steps=[f"Cooldown active for another {remaining}s "
+                            f"(base {self.cooldown_sec}s; escalates while attempts "
+                            "fail). Retry after that, or investigate with "
+                            "worker_heartbeat / queue_status."])
+
+        if in_pass:
+            grace = min(self.grace_sec, max(0, timeout // 3))
+            waited = self._wait_for_pass_to_end(grace)
+            logs.append(f"waited {waited:.1f}s for the running pass to finish "
+                        f"(grace {grace}s)")
+
+        method = "process loop"
+        self._stop_process_loop()
+        started, err = self._start_process_loop()
+        if not started:
+            self._record_attempt(outcome="spawn_failed", force=force, method=method,
+                                 duration_ms=elapsed_ms(), error=err, success=False)
+            self._log(f"spawn failed: {err}")
+            return self._result(
+                **common, success=False, restart_attempted=True,
+                restart_method=method, outcome="spawn_failed", error=err,
+                elapsed_ms=elapsed_ms(), logs=logs,
+                next_steps=self._failure_next_steps("spawn_failed", err or ""))
+        logs.append(f"started {method} (daemon pid {self._daemon_pid()})")
+
+        hb_after, verified = self._wait_for_recovery(
+            hb_before, max_stale, deadline=t0 + timeout, logs=logs)
+        queue_after = self.queue_snapshot()
+        evidence = self._queue_evidence(queue_before, queue_after, hb_after)
+        worker_pid = (hb_after or {}).get("pid") or self._daemon_pid()
+
+        if verified:
+            self._record_attempt(outcome="recovered", force=force, method=method,
+                                 duration_ms=elapsed_ms(), error=None, success=True)
+            self._log(f"recovered: heartbeat {hb_after.get('age_sec')}s old, "
+                      f"{evidence.get('note')}")
+            return self._result(
+                **common, success=True, restart_attempted=True,
+                restart_method=method, verified=True, outcome="restarted",
+                heartbeat_after=self._hb_summary(hb_after), worker_pid=worker_pid,
+                elapsed_ms=elapsed_ms(), queue_evidence=evidence, logs=logs,
+                next_steps=["Worker restarted and verified with a fresh heartbeat."])
+
+        err = (f"worker loop started, but no fresh heartbeat within {timeout}s")
+        tail = self._worker_log_tail(3)
+        self._record_attempt(outcome="restart_timeout", force=force, method=method,
+                             duration_ms=elapsed_ms(), error=err, success=False)
+        self._log(f"verification failed: {err}")
+        return self._result(
+            **common, success=False, restart_attempted=True, restart_method=method,
+            heartbeat_after=self._hb_summary(hb_after), worker_pid=worker_pid,
+            outcome="restart_timeout", error=err, elapsed_ms=elapsed_ms(),
+            queue_evidence=evidence,
             logs=logs + [f"worker log: {line}" for line in tail],
             next_steps=self._failure_next_steps("restart_timeout", err))
 
@@ -1055,6 +1298,12 @@ class Supervisor:
                 f"Run manually: launchctl kickstart -k {self.service_target()}",
                 f"and inspect {self.worker_log_path}.",
             ]
+        elif outcome == "spawn_failed":
+            steps += [
+                "Could not start the worker process loop.",
+                f"Inspect {self.daemon_log_path} and check that "
+                f"{sys.executable} can run {self.repo_dir / 'worker.py'}.",
+            ]
         steps.append("Verify with worker_heartbeat() and queue_status().")
         return steps
 
@@ -1066,6 +1315,8 @@ class Supervisor:
         a = self.assess()
         state = self._read_state()
         return {
+            "backend": self.backend(),
+            "daemon_alive": self.daemon_alive(),
             "service": self._svc_summary(a["service"]),
             "heartbeat": self._hb_summary(a["heartbeat"]),
             "status": a["status"],
@@ -1144,6 +1395,50 @@ def restart_worker(force: bool = False, timeout_sec: int | None = None) -> dict:
     return default_supervisor().restart(force=force, timeout_sec=timeout_sec)
 
 
+def ensure_started() -> dict:
+    """Start the worker if it isn't running yet (used by the installer).
+
+    Safe to call repeatedly: a fresh heartbeat or a live loop/launchd job is
+    reported as ``already_running`` without spawning a second process.
+    """
+    sup = default_supervisor()
+    if sup.backend() == "launchd":
+        return sup.restart(force=False)
+    # Process backend: liveness is the loop itself (a fresh heartbeat with no
+    # live loop means the worker died mid-window, so start a new one).
+    if sup.daemon_alive() or sup.pass_in_progress():
+        return {"success": True, "outcome": "already_running",
+                "restart_attempted": False}
+    sup._stop_process_loop()
+    ok, err = sup._start_process_loop()
+    return {"success": bool(ok), "outcome": "started" if ok else "spawn_failed",
+            "restart_attempted": bool(ok), "error": err,
+            "worker_pid": sup._daemon_pid()}
+
+
+def run_daemon(interval_sec: int = DEFAULT_LOOP_INTERVAL_SEC) -> int:
+    """Run worker passes forever — the process-backend supervisor loop.
+
+    One pass per interval. ``worker.py`` keeps its own flock, so an overlapping
+    launchd pass (or a manual run) simply skips rather than double-processing.
+    """
+    repo = Path(os.environ.get("TASKBRIDGE_REPO_DIR") or HERE).resolve()
+    pid_path = Path(os.environ.get("TASKBRIDGE_DAEMON_PID_PATH")
+                    or repo / ".worker_daemon.pid")
+    try:
+        pid_path.write_text(str(os.getpid()))
+    except OSError:
+        pass
+    interval = _clamp(interval_sec, 5, 3600, DEFAULT_LOOP_INTERVAL_SEC)
+    worker = repo / "worker.py"
+    while True:
+        try:
+            subprocess.run([sys.executable, str(worker)], cwd=str(repo), check=False)
+        except Exception:  # a broken pass must never kill the loop
+            pass
+        time.sleep(interval)
+
+
 if __name__ == "__main__":  # tiny operator CLI: python worker_supervisor.py status
     import argparse
 
@@ -1152,7 +1447,13 @@ if __name__ == "__main__":  # tiny operator CLI: python worker_supervisor.py sta
     ap.add_argument("--restart", action="store_true", help="restart (skips if healthy)")
     ap.add_argument("--force", action="store_true", help="restart even if healthy")
     ap.add_argument("--timeout", type=int, default=None, help="recovery timeout (10-600s)")
+    ap.add_argument("--daemon", action="store_true",
+                    help="run the worker pass loop in the foreground (process backend)")
+    ap.add_argument("--interval", type=int, default=DEFAULT_LOOP_INTERVAL_SEC,
+                    help=f"seconds between passes in --daemon (default {DEFAULT_LOOP_INTERVAL_SEC})")
     args = ap.parse_args()
+    if args.daemon:
+        raise SystemExit(run_daemon(args.interval))
     sup = default_supervisor()
     if args.restart or args.force:
         print(json.dumps(sup.restart(force=args.force, timeout_sec=args.timeout), indent=2))

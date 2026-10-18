@@ -12,6 +12,7 @@ tasks.db-*
 *.log
 heartbeat.json
 .worker.lock
+.worker_daemon.pid
 .restart.lock
 .restart_state.json
 .ngrok-domain
