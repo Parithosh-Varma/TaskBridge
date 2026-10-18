@@ -19,14 +19,17 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import os
+import platform
 import re
 import secrets
 import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -48,6 +51,13 @@ TOKEN_FILE = HERE / ".bridge-token"
 NGROK_LOG = HERE / "ngrok.log"
 NGROK_DOMAIN_FILE = HERE / ".ngrok-domain"
 NGROK_API = "http://127.0.0.1:4040/api/tunnels"
+NGROK_LOCAL_BIN = Path.home() / ".local" / "bin"
+NGROK_DOWNLOAD = {
+    "x86_64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz",
+    "amd64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz",
+    "aarch64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz",
+    "arm64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz",
+}
 SERVE_MARK = "opencode_bridge_mcp.py --transport"
 
 # Brand palette — mirrors the landing-page tokens in app/globals.css.
@@ -683,20 +693,68 @@ def install_requirements(ui: BaseUi) -> str:
     return "requirements satisfied"
 
 
-def ensure_ngrok(ui: BaseUi, step: Step) -> str:
+def download_ngrok(ui: BaseUi) -> str | None:
+    """Fetch the official static ngrok build into ~/.local/bin on Linux."""
+    url = NGROK_DOWNLOAD.get(platform.machine().lower())
+    if url is None:
+        return None
+    dest = NGROK_LOCAL_BIN / "ngrok"
+    ui.say(f"curl · downloading ngrok for {platform.machine()}…")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            archive = response.read()
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            member = next(m for m in tar.getmembers() if m.name.rstrip("/") == "ngrok")
+            payload = tar.extractfile(member)
+            if payload is None:
+                return None
+            NGROK_LOCAL_BIN.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(payload.read())
+        dest.chmod(0o755)
+    except (urllib.error.URLError, OSError, tarfile.TarError, StopIteration) as exc:
+        ui.say(f"ngrok · download failed: {exc}")
+        return None
+    os.environ["PATH"] = f"{NGROK_LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+    return str(dest)
+
+
+def install_ngrok_binary(ui: BaseUi) -> str | None:
+    """Return a path to the ngrok binary, installing it if it is missing.
+
+    macOS uses Homebrew; Linux downloads the official static build into
+    ~/.local/bin and prepends it to PATH for the rest of this process, so
+    every later ngrok call (config, tunnel) finds the same binary.
+    """
     found = shutil.which("ngrok")
-    if found is None:
-        brew = shutil.which("brew")
-        if brew is None:
-            raise SetupError("ngrok is not installed", hint="download it from https://ngrok.com/download and re-run ./install.sh")
-        step.detail = "installing via Homebrew…"
+    if found is not None:
+        return found
+    local = NGROK_LOCAL_BIN / "ngrok"
+    if local.is_file() and os.access(local, os.X_OK):
+        os.environ["PATH"] = f"{NGROK_LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+        return str(local)
+    brew = shutil.which("brew")
+    if brew is not None:
         ui.say("brew · installing ngrok/ngrok/ngrok")
         code = subprocess.run([brew, "install", "-q", "ngrok/ngrok/ngrok"], capture_output=True, text=True, check=False).returncode
         ui.say("")
         found = shutil.which("ngrok")
-        if code != 0 or found is None:
-            raise SetupError("could not install ngrok with Homebrew", hint="brew install ngrok/ngrok/ngrok")
-        step.detail = "installed via Homebrew"
+        return found if code == 0 and found is not None else None
+    if sys.platform.startswith("linux"):
+        return download_ngrok(ui)
+    return None
+
+
+def ensure_ngrok(ui: BaseUi, step: Step) -> str:
+    found = shutil.which("ngrok")
+    if found is None:
+        step.detail = "installing…"
+        found = install_ngrok_binary(ui)
+        if found is None:
+            raise SetupError(
+                "ngrok is not installed",
+                hint="install it from https://ngrok.com/download (macOS: `brew install ngrok/ngrok/ngrok`), then re-run ./install.sh",
+            )
+        step.detail = "installed"
     version = subprocess.run([found, "version"], capture_output=True, text=True, check=False).stdout.strip()
     match = re.search(r"\d+\.\d+\.\d+", version)
     label = match.group(0) if match else "installed"
@@ -704,11 +762,20 @@ def ensure_ngrok(ui: BaseUi, step: Step) -> str:
 
 
 def ngrok_configured() -> bool:
-    return subprocess.run(["ngrok", "config", "check"], capture_output=True, text=True, check=False).returncode == 0
+    found = shutil.which("ngrok")
+    if found is None:
+        return False
+    return subprocess.run([found, "config", "check"], capture_output=True, text=True, check=False).returncode == 0
 
 
 def save_authtoken(token: str) -> None:
-    result = subprocess.run(["ngrok", "config", "add-authtoken", token], capture_output=True, text=True, check=False)
+    found = shutil.which("ngrok")
+    if found is None:
+        raise SetupError(
+            "ngrok is not installed",
+            hint="install it from https://ngrok.com/download, then re-run ./install.sh",
+        )
+    result = subprocess.run([found, "config", "add-authtoken", token], capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise SetupError("ngrok rejected that Authtoken", hint="copy it again from https://dashboard.ngrok.com/get-started/your-authtoken")
 
@@ -718,6 +785,7 @@ def preflight_auth(ui: BaseUi, args: argparse.Namespace, port: int) -> str:
 
     Only prompts when a tunnel is actually needed and none is running yet.
     """
+    install_ngrok_binary(ui)
     provided = (args.ngrok_token or os.environ.get("NGROK_AUTHTOKEN", "")).strip()
     if provided:
         save_authtoken(provided)
