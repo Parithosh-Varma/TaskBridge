@@ -22,14 +22,14 @@ Claude is a powerful planner that can't touch your filesystem. OpenCode runs cod
 - **Worktree isolation** — per-task branch + `git worktree`, auto-committed on success, cleaned up unless `worktree_keep`.
 - **Honest permissions** — `readonly` reverts writes and reports `reverted` files; `no-network` / `no-shell` are prompt-level and explicitly labeled.
 - **Reverse bridge** (`claude_control_mcp.py`) — 6 tools for OpenCode to drive Claude: `claude_ask` (sync), `claude_submit` / `claude_poll` / `claude_result` / `claude_cancel` (background), `claude_status`. Uses Anthropic API if `ANTHROPIC_API_KEY` is set, else `claude -p`.
-- **Public-URL mode** (`install.sh` / `start_public.sh`) — one command to expose MCP via ngrok (the installer prompts for your Authtoken) or Cloudflare quick tunnel with automatic `MCP_ALLOWED_HOSTS` pairing.
+- **Public-URL mode** (`install.sh` / `start_public.sh`) — one command to expose MCP through a temporary Cloudflare quick tunnel (default, no account needed) or ngrok, with automatic `MCP_ALLOWED_HOSTS` pairing. The installer asks which tunnel to use.
 - **Live dispatch board** (`bridge_dashboard.html`) — served at `GET /` on the same host. Tally counts, per-task live logs, reverse jobs, engine tail, and a scrolling feed of fresh output. The **Model** button sets the worker default model (persisted to `worker_config.json`) without touching the CLI. Polls `/api/*`; MCP stays at `/mcp`.
 - **Caller detection** — `submit_task`/`submit_batch` stamp the true caller from the MCP handshake `clientInfo`, so Claude and ChatGPT dockets stay separate. `origin` can be overridden explicitly.
 - **Production reliability** — per-attempt timeouts, 15-min stale-`running` reaper with pid-reuse guard, single-instance flock, heartbeat file, macOS banners (`WORKER_NOTIFY=0` to silence).
 
 ## Quickstart
 
-Prerequisites: Python 3.12, `opencode` CLI on `PATH`, and (for public access) a free ngrok account.
+Prerequisites: Python 3.12 and `opencode` CLI on `PATH`. Public access needs no account by default — the installer offers a temporary Cloudflare quick tunnel; a free ngrok account is only needed if you pick ngrok (reserved domain / existing Authtoken).
 
 **One command — install, tunnel, serve, print your connector box:**
 
@@ -39,7 +39,7 @@ cd TaskBridge
 ./install.sh
 ```
 
-`install.sh` prompts for your ngrok Authtoken (blank = already configured), installs dependencies into `.venv`, generates or reuses the bearer token in `.bridge-token`, opens the ngrok tunnel (fixed domain from `.ngrok-domain` when present), pairs `MCP_ALLOWED_HOSTS`, prints the public URL + token box, then serves MCP in the foreground. Ctrl+C stops the server; the tunnel stays up for the next run. Rotate the token with `./install.sh --rotate`.
+`install.sh` first asks which tunnel to use — **Cloudflare quick tunnel** (default, no account, random `trycloudflare.com` URL) or **ngrok** (prompts for your Authtoken; fixed domain from `.ngrok-domain` when present). Skip the prompt with `--tunnel cloudflare` / `--tunnel ngrok`. It then installs dependencies into `.venv`, generates or reuses the bearer token in `.bridge-token`, opens the tunnel, pairs `MCP_ALLOWED_HOSTS`, prints the public URL + token box, and serves MCP in the foreground. Ctrl+C stops the server; the tunnel stays up for the next run. Rotate the token with `./install.sh --rotate`.
 
 **Manual setup** (stdio / local dev):
 
@@ -171,7 +171,7 @@ Key components:
 | `worker.py` | Headless executor: `opencode run --auto`, timeouts, reaper, worktrees, banners |
 | `worker_supervisor.py` | Independent restart engine behind `restart_worker` (launchd control, cooldown, verification); imports nothing from `worker.py` |
 | `claude_control_mcp.py` | Reverse MCP server (OpenCode → Claude) |
-| `install.sh` | One command: deps + bearer token + ngrok tunnel + allowlist + serve |
+| `install.sh` | One command: deps + bearer token + tunnel choice (Cloudflare quick tunnel or ngrok) + allowlist + serve |
 | `start_public.sh` | Background variant: tunnel + allowlisted MCP server (ngrok fixed domain or Cloudflare) |
 | `launchd/` | Worker LaunchAgent template + install/uninstall script + supervision docs |
 | `claude_desktop_config.snippet.json` | Claude Desktop wiring template (`<REPO_PATH>` placeholder) |
@@ -197,7 +197,7 @@ Key components:
 | `TASKBRIDGE_RESTART_TIMEOUT_SEC` | `restart_worker` | Default verified-recovery timeout (default 90) |
 | `TASKBRIDGE_RESTART_GRACE_SEC` | `restart_worker` | Max wait for a running pass before `kickstart -k` (default 20) |
 
-`start_public.sh`: uses `.ngrok-domain` if present (fixed domain), else Cloudflare quick tunnel. It re-pairs `MCP_ALLOWED_HOSTS` automatically — rerun it whenever the URL changes. If `.bridge-token` exists, `BRIDGE_AUTH_TOKEN` is loaded automatically. `install.sh` is the interactive equivalent — it prompts for the ngrok Authtoken and serves MCP in the foreground.
+`start_public.sh`: uses `.ngrok-domain` if present (fixed domain), else Cloudflare quick tunnel. It re-pairs `MCP_ALLOWED_HOSTS` automatically — rerun it whenever the URL changes. If `.bridge-token` exists, `BRIDGE_AUTH_TOKEN` is loaded automatically. `install.sh` is the interactive equivalent — it asks which tunnel to use (Cloudflare quick tunnel by default, ngrok optional), installs `cloudflared`/`ngrok` as needed, and serves MCP in the foreground. Set `TASKBRIDGE_TUNNEL=cloudflare|ngrok` to answer that prompt non-interactively.
 
 ## Project structure
 

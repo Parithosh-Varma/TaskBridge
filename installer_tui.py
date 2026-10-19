@@ -4,7 +4,10 @@
 `./install.sh` only bootstraps a python 3.12 venv; everything after that lives
 here:
 
-    runtime → dependencies → ngrok → bearer token → tunnel → credentials → serve
+    runtime → dependencies → tunnel choice → transport → bearer token → tunnel → credentials → serve
+
+The tunnel provider is picked up front: a temporary Cloudflare quick tunnel
+(no account required, the default) or ngrok for a reserved domain.
 
 Two renderers, same event API:
 
@@ -51,13 +54,34 @@ TOKEN_FILE = HERE / ".bridge-token"
 NGROK_LOG = HERE / "ngrok.log"
 NGROK_DOMAIN_FILE = HERE / ".ngrok-domain"
 NGROK_API = "http://127.0.0.1:4040/api/tunnels"
-NGROK_LOCAL_BIN = Path.home() / ".local" / "bin"
+CLOUDFLARE_LOG = HERE / "cloudflared.log"
+LOCAL_BIN = Path.home() / ".local" / "bin"
 NGROK_DOWNLOAD = {
     "x86_64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz",
-    "amd64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz",
-    "aarch64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz",
-    "arm64": "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz",
+    "amd64":  "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz",
+    "aarch64":"https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz",
+    "arm64":  "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm64.tgz",
 }
+CLOUDFLARE_DOWNLOAD = {
+    ("linux", "x86_64"): ("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "raw"),
+    ("linux", "amd64"):  ("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64", "raw"),
+    ("linux", "aarch64"):("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64", "raw"),
+    ("linux", "arm64"):  ("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64", "raw"),
+    ("darwin", "x86_64"):("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-amd64.tgz", "tgz"),
+    ("darwin", "arm64"): ("https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz", "tgz"),
+}
+CLOUDFLARE_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+TUNNEL_ALIASES = {
+    "cloudflare": "cloudflare",
+    "cloudflared": "cloudflare",
+    "quick": "cloudflare",
+    "trycloudflare": "cloudflare",
+    "ngrok": "ngrok",
+}
+TUNNEL_CHOICES = (
+    ("Cloudflare quick tunnel", "free · no account needed · random trycloudflare.com URL (recommended)"),
+    ("ngrok", "free account + Authtoken · optional reserved domain"),
+)
 SERVE_MARK = "opencode_bridge_mcp.py --transport"
 
 # Brand palette — mirrors the landing-page tokens in app/globals.css.
@@ -250,6 +274,39 @@ def ask_secret(hint: str) -> str | None:
         writer.close()
 
 
+def ask_line(prompt: str = "") -> str | None:
+    """Read one visible line from /dev/tty. None when there is no terminal."""
+    try:
+        reader = open("/dev/tty", "r")  # noqa: SIM115
+        writer = open("/dev/tty", "w")  # noqa: SIM115
+    except OSError:
+        return None
+    try:
+        if prompt:
+            writer.write(f"{prompt}\n")
+        writer.write("\033[1m❯\033[0m ")
+        writer.flush()
+        line = reader.readline()
+        return None if not line else line.strip()
+    finally:
+        reader.close()
+        writer.close()
+
+
+def read_choice(count: int, default: int = 0) -> int | None:
+    """Ask for a 1-based pick on /dev/tty. None when there is no terminal."""
+    first = True
+    while True:
+        line = ask_line(f"choose 1-{count} · Enter picks {default + 1}" if first else f"pick 1-{count}")
+        first = False
+        if line is None:
+            return None
+        if not line:
+            return default
+        if line.isdigit() and 1 <= int(line) <= count:
+            return int(line) - 1
+
+
 # --------------------------------------------------------------------------- #
 # state
 # --------------------------------------------------------------------------- #
@@ -270,7 +327,8 @@ class Facts:
     python: str = ""
     platform: str = ""
     venv_ready: bool = False
-    ngrok_version: str = ""
+    tunnel_provider: str = ""
+    tunnel_version: str = ""
     auth_state: str = ""
     token: str = ""
     token_state: str = "reused"
@@ -322,6 +380,8 @@ class BaseUi:
         self.refresh()
 
     def ask(self, question: str, hint: str = "") -> str | None: ...
+
+    def choose(self, question: str, options: Sequence[tuple[str, str]], default: int = 0) -> int | None: ...
 
     def note(self, text: str) -> None: ...
 
@@ -390,6 +450,17 @@ class PlainUi(BaseUi):
         if hint:
             print(f"  {self._c(hint, self.facts.theme['faint'])}")
         return ask_secret("  Authtoken (paste is hidden — press Enter when done)")
+
+    def choose(self, question: str, options: Sequence[tuple[str, str]], default: int = 0) -> int | None:
+        theme = self.facts.theme
+        print()
+        print(f"  {self._c(question, theme['paper'], True)}")
+        for index, (label, detail) in enumerate(options, 1):
+            suffix = self._c("  (default)", theme["faint"]) if index - 1 == default else ""
+            print(f"    {self._c(str(index), theme['signal'], True)}. {self._c(label, theme['paper'])}{suffix}")
+            if detail:
+                print(f"       {self._c(detail, theme['faint'])}")
+        return read_choice(len(options), default)
 
     def note(self, text: str) -> None:
         print(f"  {self._c(text, self.facts.theme['faint'])}")
@@ -564,6 +635,7 @@ def build_live_ui(facts: Facts):
 
         # -- events ---------------------------------------------------------
         def ask(self, question: str, hint: str = "") -> str | None:
+            was_live = self.live is not None
             self._stop_live()
             self.console.print()
             self.console.print(
@@ -576,7 +648,35 @@ def build_live_ui(facts: Facts):
                     title_align="left",
                 )
             )
-            return ask_secret("Authtoken (paste is hidden — press Enter when done)")
+            entered = ask_secret("Authtoken (paste is hidden — press Enter when done)")
+            self._resume_live(was_live)
+            return entered
+
+        def choose(self, question: str, options: Sequence[tuple[str, str]], default: int = 0) -> int | None:
+            was_live = self.live is not None
+            self._stop_live()
+            body: list = [Text(question, style="tb.paper"), Text()]
+            for index, (label, detail) in enumerate(options, 1):
+                row = Text.assemble((f"{index}. ", "tb.signal bold"), (label, "tb.label"))
+                if index - 1 == default:
+                    row.append("  (default)", style="tb.faint")
+                if detail:
+                    row.append(f"   {detail}", style="tb.faint")
+                body.append(row)
+            self.console.print()
+            self.console.print(
+                Panel(
+                    Group(*body),
+                    box=box.ROUNDED,
+                    border_style="tb.rule",
+                    padding=(1, 2),
+                    title="[tb.signal]tunnel[/]",
+                    title_align="left",
+                )
+            )
+            choice = read_choice(len(options), default)
+            self._resume_live(was_live)
+            return choice
 
         def note(self, text: str) -> None:
             self._with_live_paused(lambda: self.console.print(Text(text, style="tb.faint")))
@@ -628,6 +728,11 @@ def build_live_ui(facts: Facts):
             if self.live is not None:
                 self.live.stop()
                 self.live = None
+
+        def _resume_live(self, was_live: bool) -> None:
+            if was_live and not self._closed:
+                self.live = Live(self._render(), console=self.console, refresh_per_second=12, transient=True, vertical_overflow="visible")
+                self.live.start()
 
         def _with_live_paused(self, emit: Callable[[], None]) -> None:
             was_live = self.live is not None
@@ -707,7 +812,7 @@ def download_ngrok(ui: BaseUi) -> str | None:
     url = NGROK_DOWNLOAD.get(platform.machine().lower())
     if url is None:
         return None
-    dest = NGROK_LOCAL_BIN / "ngrok"
+    dest = LOCAL_BIN / "ngrok"
     ui.say(f"curl · downloading ngrok for {platform.machine()}…")
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
@@ -717,13 +822,13 @@ def download_ngrok(ui: BaseUi) -> str | None:
             payload = tar.extractfile(member)
             if payload is None:
                 return None
-            NGROK_LOCAL_BIN.mkdir(parents=True, exist_ok=True)
+            LOCAL_BIN.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(payload.read())
         dest.chmod(0o755)
     except (urllib.error.URLError, OSError, tarfile.TarError, StopIteration) as exc:
         ui.say(f"ngrok · download failed: {exc}")
         return None
-    os.environ["PATH"] = f"{NGROK_LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+    os.environ["PATH"] = f"{LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
     return str(dest)
 
 
@@ -737,9 +842,9 @@ def install_ngrok_binary(ui: BaseUi) -> str | None:
     found = shutil.which("ngrok")
     if found is not None:
         return found
-    local = NGROK_LOCAL_BIN / "ngrok"
+    local = LOCAL_BIN / "ngrok"
     if local.is_file() and os.access(local, os.X_OK):
-        os.environ["PATH"] = f"{NGROK_LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+        os.environ["PATH"] = f"{LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
         return str(local)
     brew = shutil.which("brew")
     if brew is not None:
@@ -753,6 +858,53 @@ def install_ngrok_binary(ui: BaseUi) -> str | None:
     return None
 
 
+def download_cloudflared(ui: BaseUi) -> str | None:
+    """Fetch the official cloudflared build into ~/.local/bin."""
+    entry = CLOUDFLARE_DOWNLOAD.get((sys.platform, platform.machine().lower()))
+    if entry is None:
+        return None
+    url, kind = entry
+    dest = LOCAL_BIN / "cloudflared"
+    ui.say(f"curl · downloading cloudflared for {platform.machine()}…")
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            payload = response.read()
+        if kind == "tgz":
+            with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as tar:
+                member = next(m for m in tar.getmembers() if m.name.rstrip("/") == "cloudflared")
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    return None
+                payload = extracted.read()
+        LOCAL_BIN.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(payload)
+        dest.chmod(0o755)
+    except (urllib.error.URLError, OSError, tarfile.TarError, StopIteration) as exc:
+        ui.say(f"cloudflared · download failed: {exc}")
+        return None
+    os.environ["PATH"] = f"{LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+    return str(dest)
+
+
+def install_cloudflared_binary(ui: BaseUi) -> str | None:
+    """Return a path to the cloudflared binary, installing it if missing."""
+    found = shutil.which("cloudflared")
+    if found is not None:
+        return found
+    local = LOCAL_BIN / "cloudflared"
+    if local.is_file() and os.access(local, os.X_OK):
+        os.environ["PATH"] = f"{LOCAL_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+        return str(local)
+    brew = shutil.which("brew")
+    if brew is not None:
+        ui.say("brew · installing cloudflared")
+        code = subprocess.run([brew, "install", "-q", "cloudflared"], capture_output=True, text=True, check=False).returncode
+        ui.say("")
+        found = shutil.which("cloudflared")
+        return found if code == 0 and found is not None else None
+    return download_cloudflared(ui)
+
+
 def ensure_ngrok(ui: BaseUi, step: Step) -> str:
     found = shutil.which("ngrok")
     if found is None:
@@ -762,6 +914,23 @@ def ensure_ngrok(ui: BaseUi, step: Step) -> str:
             raise SetupError(
                 "ngrok is not installed",
                 hint="install it from https://ngrok.com/download (macOS: `brew install ngrok/ngrok/ngrok`), then re-run ./install.sh",
+            )
+        step.detail = "installed"
+    version = subprocess.run([found, "version"], capture_output=True, text=True, check=False).stdout.strip()
+    match = re.search(r"\d+\.\d+\.\d+", version)
+    label = match.group(0) if match else "installed"
+    return f"{step.detail} · {label}" if step.detail.startswith("installed") else f"already installed · {label}"
+
+
+def ensure_cloudflared(ui: BaseUi, step: Step) -> str:
+    found = shutil.which("cloudflared")
+    if found is None:
+        step.detail = "installing…"
+        found = install_cloudflared_binary(ui)
+        if found is None:
+            raise SetupError(
+                "cloudflared is not installed",
+                hint="install it from https://github.com/cloudflare/cloudflared/releases (macOS: `brew install cloudflared`), then re-run ./install.sh",
             )
         step.detail = "installed"
     version = subprocess.run([found, "version"], capture_output=True, text=True, check=False).stdout.strip()
@@ -789,11 +958,37 @@ def save_authtoken(token: str) -> None:
         raise SetupError("ngrok rejected that Authtoken", hint="copy it again from https://dashboard.ngrok.com/get-started/your-authtoken")
 
 
-def preflight_auth(ui: BaseUi, args: argparse.Namespace, port: int) -> str:
+def preflight_tunnel(ui: BaseUi, args: argparse.Namespace) -> str:
+    """Pick the tunnel provider before anything is installed.
+
+    Cloudflare quick tunnels need no account and are the default; ngrok is
+    offered for a reserved domain or when an Authtoken is already supplied.
+    """
+    forced = (args.tunnel or os.environ.get("TASKBRIDGE_TUNNEL", "")).strip().lower()
+    if forced:
+        provider = TUNNEL_ALIASES.get(forced)
+        if provider is None:
+            raise SetupError(
+                f"unknown tunnel provider {forced!r}",
+                hint="use --tunnel cloudflare or --tunnel ngrok",
+            )
+        return provider
+    if (args.ngrok_token or os.environ.get("NGROK_AUTHTOKEN", "")).strip():
+        return "ngrok"  # an Authtoken was supplied — that is a clear vote
+    choice = ui.choose("Which tunnel should carry your public URL?", TUNNEL_CHOICES, default=0)
+    if choice is None:
+        return "cloudflare"  # no terminal to ask on: the zero-setup option
+    return ("cloudflare", "ngrok")[choice]
+
+
+def preflight_auth(ui: BaseUi, args: argparse.Namespace, port: int, provider: str) -> str:
     """Sort the ngrok Authtoken out before the live checklist starts.
 
+    Cloudflare quick tunnels need no account, so this is a no-op there.
     Only prompts when a tunnel is actually needed and none is running yet.
     """
+    if provider == "cloudflare":
+        return "not needed — quick tunnels need no account"
     install_ngrok_binary(ui)
     provided = (args.ngrok_token or os.environ.get("NGROK_AUTHTOKEN", "")).strip()
     if provided:
@@ -836,10 +1031,10 @@ def tunnel_for_port(port: int) -> str:
     return ""
 
 
-def ensure_tunnel(ui: BaseUi, step: Step, port: int) -> tuple[str, str]:
+def ensure_ngrok_tunnel(ui: BaseUi, step: Step, port: int) -> tuple[str, str]:
     url = tunnel_for_port(port)
     if url:
-        step.detail = f"reusing the live tunnel for port {port}"
+        step.detail = f"reusing the live ngrok tunnel for port {port}"
         return url, "reused"
 
     domain = NGROK_DOMAIN_FILE.read_text().strip() if NGROK_DOMAIN_FILE.is_file() else ""
@@ -864,6 +1059,45 @@ def ensure_tunnel(ui: BaseUi, step: Step, port: int) -> tuple[str, str]:
         "ngrok did not publish a public URL within 15s",
         hint=(f"last ngrok.log lines: {' / '.join(last_lines(NGROK_LOG, 3))}" if last_lines(NGROK_LOG, 3) else "re-run and paste a fresh Authtoken"),
     )
+
+
+def cloudflare_url() -> str:
+    for line in last_lines(CLOUDFLARE_LOG, 200):
+        match = CLOUDFLARE_URL.search(line)
+        if match:
+            return match.group(0)
+    return ""
+
+
+def ensure_cloudflare_tunnel(ui: BaseUi, step: Step, port: int) -> tuple[str, str]:
+    """Open a temporary trycloudflare.com quick tunnel to the local port."""
+    subprocess.run(["pkill", "-f", "cloudflared.*--url"], capture_output=True, check=False)
+    command = [
+        "cloudflared", "--no-autoupdate", "tunnel", "--protocol", "http2",
+        "--url", f"http://127.0.0.1:{port}",
+    ]
+    step.detail = f"opening a quick tunnel to 127.0.0.1:{port}…"
+    with CLOUDFLARE_LOG.open("w") as log:
+        subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, cwd=str(HERE))
+    for attempt in range(1, 31):
+        time.sleep(1)
+        ui.say(f"cloudflare · waiting for the trycloudflare.com URL… {attempt}/30")
+        url = cloudflare_url()
+        if url:
+            ui.say("")
+            step.detail = f"quick tunnel up in {human(attempt)}"
+            return url, "started"
+    ui.say("")
+    raise SetupError(
+        "cloudflared did not publish a trycloudflare.com URL within 30s",
+        hint=(f"last cloudflared.log lines: {' / '.join(last_lines(CLOUDFLARE_LOG, 3))}" if last_lines(CLOUDFLARE_LOG, 3) else "re-run ./install.sh to try a fresh quick tunnel"),
+    )
+
+
+def ensure_tunnel(ui: BaseUi, step: Step, port: int, provider: str) -> tuple[str, str]:
+    if provider == "cloudflare":
+        return ensure_cloudflare_tunnel(ui, step, port)
+    return ensure_ngrok_tunnel(ui, step, port)
 
 
 def ensure_worker_daemon() -> str:
@@ -904,11 +1138,21 @@ def run_setup(ui: BaseUi, facts: Facts, args: argparse.Namespace) -> None:
         facts.deps_state = install_requirements(ui)
         step.detail = facts.deps_state
 
-    with track.step("ngrok", "ngrok transport", "looking for ngrok…") as step:
-        facts.ngrok_version = ensure_ngrok(ui, step)
-        step.detail = facts.ngrok_version
+    provider = facts.tunnel_provider
+    if provider == "cloudflare":
+        transport_label, binary, tunnel_label, account_label = (
+            "cloudflared transport", "cloudflared", "cloudflare tunnel", "cloudflare account",
+        )
+    else:
+        transport_label, binary, tunnel_label, account_label = (
+            "ngrok transport", "ngrok", "ngrok tunnel", "ngrok account",
+        )
 
-    with track.step("auth", "ngrok account", "checking the Authtoken…") as step:
+    with track.step("transport", transport_label, f"looking for {binary}…") as step:
+        facts.tunnel_version = ensure_cloudflared(ui, step) if provider == "cloudflare" else ensure_ngrok(ui, step)
+        step.detail = facts.tunnel_version
+
+    with track.step("auth", account_label, "checking the Authtoken…" if provider == "ngrok" else "quick tunnels need no account…") as step:
         step.detail = facts.auth_state
 
     with track.step("token", "bearer token", "reading .bridge-token…") as step:
@@ -919,8 +1163,8 @@ def run_setup(ui: BaseUi, facts: Facts, args: argparse.Namespace) -> None:
             "rotated": "rotated · .bridge-token (mode 600)",
         }[facts.token_state]
 
-    with track.step("tunnel", "public tunnel", "asking ngrok for the current tunnels…") as step:
-        facts.public_url, facts.tunnel_state = ensure_tunnel(ui, step, facts.port)
+    with track.step("tunnel", tunnel_label, f"opening a tunnel to 127.0.0.1:{facts.port}…") as step:
+        facts.public_url, facts.tunnel_state = ensure_tunnel(ui, step, facts.port, provider)
 
     with track.step("worker", "opencode CLI", "checking PATH…") as step:
         facts.opencode_cli = shutil.which("opencode") is not None
@@ -976,9 +1220,11 @@ def promote(ui: BaseUi, facts: Facts) -> None:
             ("Claude Desktop", "stdio mode — no URL or token needed"),
             ("Health check", f"curl {facts.public_url}/health"),
             ("Rotate token", "./install.sh --rotate"),
-            ("Stop server", "Ctrl+C — the ngrok tunnel stays up"),
+            ("Stop server", f"Ctrl+C — the {facts.tunnel_provider} tunnel stays up"),
         ],
     )
+    if facts.tunnel_provider == "cloudflare":
+        ui.note("cloudflare quick tunnels get a new URL on every restart — rerun ./install.sh to re-pair.")
     if not facts.opencode_cli:
         ui.note("! opencode CLI is missing — install it so the worker can execute jobs.")
 
@@ -989,8 +1235,8 @@ def serve(ui: BaseUi, facts: Facts) -> int:
         "server",
         [
             ("Listening", f"http://127.0.0.1:{facts.port}" + ("  ·  replaced the previous instance" if replaced else "")),
-            ("Tunnel", f"{facts.public_url} → 127.0.0.1:{facts.port}"),
-            ("Stop", "Ctrl+C stops the server; the ngrok tunnel stays up"),
+            ("Tunnel", f"{facts.public_url} → 127.0.0.1:{facts.port}  ·  {facts.tunnel_provider}"),
+            ("Stop", f"Ctrl+C stops the server; the {facts.tunnel_provider} tunnel stays up"),
         ],
     )
     if not wait_for_port(ui, facts.port):
@@ -1014,6 +1260,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument("--rotate", action="store_true", help="regenerate the bearer token before serving")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")), help="MCP server port (default 8000)")
+    parser.add_argument("--tunnel", default="", metavar="PROVIDER", help="tunnel provider — cloudflare (quick tunnel, no account) or ngrok; default: ask interactively")
     parser.add_argument("--ngrok-token", default="", help="ngrok Authtoken to save before opening the tunnel")
     parser.add_argument("--no-serve", action="store_true", help="set everything up and print credentials, but do not start the server")
     parser.add_argument("--plain", action="store_true", help="line output only — no live dashboard")
@@ -1030,7 +1277,8 @@ def main(argv: Sequence[str]) -> int:
 
     ui.open()
     try:
-        facts.auth_state = preflight_auth(ui, args, args.port)
+        facts.tunnel_provider = preflight_tunnel(ui, args)
+        facts.auth_state = preflight_auth(ui, args, args.port, facts.tunnel_provider)
         run_setup(ui, facts, args)
     except SetupError as exc:
         ui.close()

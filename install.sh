@@ -1,18 +1,23 @@
 #!/bin/bash
 # TaskBridge — one-command install & launch.
 #
-#   ./install.sh                 install deps, reuse/create the bearer token, open
-#                                the ngrok tunnel, serve MCP (foreground, rich TUI)
+#   ./install.sh                 install deps, reuse/create the bearer token, ask
+#                                which tunnel to use, serve MCP (foreground, rich TUI)
 #   ./install.sh --rotate        regenerate the bearer token first
 #   ./install.sh --no-serve      set everything up, print the credentials, stop
 #   ./install.sh --plain         plain line output instead of the live dashboard
+#   ./install.sh --tunnel cloudflare  skip the prompt: temporary trycloudflare.com URL
+#   ./install.sh --tunnel ngrok       skip the prompt: ngrok (Authtoken needed)
 #   ./install.sh --ngrok-token X save an ngrok Authtoken before opening the tunnel
+#
+# The installer asks which tunnel to use. Cloudflare quick tunnels need no account
+# and are the default; ngrok suits reserved domains or existing Authtokens.
 #
 # Or straight from a shell (clones the repo for you):
 #   curl -fsSL https://taskbridge-landing.pages.dev/install | bash
 #
 # Safe to re-run: an existing .venv, .bridge-token and a live ngrok tunnel for the
-# same port are reused. Ctrl+C stops the server; the ngrok tunnel stays up.
+# same port are reused. Ctrl+C stops the server; the tunnel stays up.
 #
 # This file is only the bootstrap: it guarantees a python 3.12 venv with the rich
 # renderer available, then hands the terminal over to installer_tui.py, which owns
