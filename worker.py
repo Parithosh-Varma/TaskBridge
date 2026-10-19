@@ -55,6 +55,71 @@ def _resolve_opencode_bin() -> str:
 
 
 OPENCODE_BIN = _resolve_opencode_bin()
+_HELP_CACHE: dict[str, str | None] = {}
+
+# Flags the worker would LIKE on `opencode run`, added only when the installed
+# binary advertises them. Never pass an optional flag blindly: unknown flags
+# make some builds dump help and exit 1 before the model is ever reached, so
+# an unrecognized/unprobeable variant must simply run without them.
+OPTIONAL_RUN_FLAGS = ("--standalone",)
+
+
+def _run_help(bin_path: str) -> str | None:
+    """`opencode run` help text (stdout+stderr) for this binary, or None.
+
+    Cached per binary path. `--help` then `-h` because builds disagree which
+    one they answer; unreadable/empty help returns None and callers treat all
+    optional flags as unsupported rather than guessing."""
+    if bin_path in _HELP_CACHE:
+        return _HELP_CACHE[bin_path]
+    blob = None
+    for help_flag in ("--help", "-h"):
+        try:
+            proc = subprocess.run(
+                [bin_path, "run", help_flag], capture_output=True, text=True,
+                timeout=20)
+        except Exception:
+            continue
+        text = (proc.stdout or "") + (proc.stderr or "")
+        if text.strip():
+            blob = text
+            break
+    _HELP_CACHE[bin_path] = blob
+    return blob
+
+
+def supported_run_flags(bin_path: str | None = None) -> list[str]:
+    """Subset of OPTIONAL_RUN_FLAGS this binary's help advertises.
+
+    Version-agnostic by construction: the binary is asked, not a version
+    table. Help that can't be read means "none" — a run without optional
+    flags works on every variant, it just loses the extra behavior."""
+    bin_path = bin_path or OPENCODE_BIN
+    help_text = _run_help(bin_path)
+    if not help_text:
+        return []
+    return [flag for flag in OPTIONAL_RUN_FLAGS if flag in help_text]
+
+
+# A CLI that rejects an unknown flag prints its usage/help and exits nonzero
+# within seconds, before touching the model. Match the FIRST meaningful line
+# (dumps start with it; model output rarely does, and never with rc != 0 on a
+# task that did work) so a late real failure is never retried into a double-run.
+_ARGV_DUMP_HEADS = ("opencode run [", "Usage:", "usage:", "Options:")
+ARGV_REJECT_MAX_SEC = 60
+
+
+def _looks_like_argv_reject(output: str, elapsed_sec: float) -> bool:
+    if elapsed_sec > ARGV_REJECT_MAX_SEC:
+        return False
+    for line in output.splitlines():
+        head = line.strip()
+        if not head:
+            continue
+        return head.startswith(_ARGV_DUMP_HEADS)
+    return False
+
+
 WORKER_VERSION = "2.0.0"
 # Free model that works without paid credits; override with WORKER_MODEL env.
 # Re-check with `opencode models` when free tiers rotate — retired ids make
@@ -768,45 +833,19 @@ def _revert_touched(workdir: str, touched: list[str]) -> list[str]:
     return reverted
 
 
-def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
-    """Execute one task. Returns outcome dict (no DB writes here)."""
+def _run_cli_attempt(cmd: list[str], workdir: str, log_path: Path, tid: str,
+                     timeout: int, header: str) -> dict:
+    """Spawn one `opencode run` attempt, stream it into the task log, enforce
+    the timeout, and manage the pidfile (placeholder -> real pid -> cleanup).
+
+    Returns {rc, output, killed, launch_error}; success/failure verdicts stay
+    in run_task, which may retry the attempt with different argv."""
     import selectors as _selectors
-    tid = task["id"]
-    workdir = task.get("_cwd") or str(HERE)
-    pinned = (task.get("model") or "").strip()
-    if pinned and not task_store._MODEL_ID.fullmatch(pinned):
-        # argv safety: a model string that could pass CLI flags is not a model
-        print(f"task {tid}: invalid model {pinned!r} — falling back to worker default", flush=True)
-        pinned = ""
-    model, model_note = resolve_model(pinned)
-    if model_note:
-        log(f"{tid}: {model_note}")
-        _notify_model_reroute(pinned or default_model(), model)
-    timeout = max(30, min(int(task.get("timeout_sec") or 600), 1800))
-    permission = task.get("permission") or "full"
-    # Enforcement truth table (verified by probing, Oct 2026):
-    # - readonly: writes reverted after the run (true enforcement, see process_one)
-    # - no-network: prompt-level only — OS-deny bricks cloud models (they need
-    #   network for inference) and the background server escapes sandbox-exec.
-    # - no-shell: prompt-level only (opencode run has no tool-restriction flag).
-    enforced = False  # set True below only if readonly revert removes files
-    # --standalone: keeps the whole process tree under our CLI child, so the
-    # reaper can enumerate and kill descendants. Plain mode spawns shell-tool
-    # children under the shared `opencode-cli serve --service` daemon in their
-    # own pgids — invisible to us and unkillable by task (probed Oct 2026).
-    # --title: argv marker (br-<tid>-a<n>) identifying OUR CLI child in ps
-    # output — the reaper/sweep match on it, so pid reuse can't misdirect a
-    # kill. Per-attempt (no session bleed across retries). NOTE: --session
-    # cannot be used here: it makes free-tier models refuse to run.
-    cmd = [OPENCODE_BIN, "run", "--standalone",
-           "--title", _title_marker(tid, attempt_no),
-           "--auto", "--model", model,
-           build_prompt(task, dep_outputs)]
-    log_path = LOGS_DIR / f"{tid}.log"
     t0 = time.time()
+    output_chunks: list[bytes] = []
+    killed = False
     with open(log_path, "a") as lf:
-        lf.write(f"\n=== attempt starting {datetime.now(timezone.utc).isoformat()} "
-                 f"model={model} permission={permission} ===\n")
+        lf.write(header)
         lf.flush()
         # placeholder written BEFORE spawn: if the worker is SIGKILLed inside
         # the spawn window the reaper still sees evidence (an untracked-orphan
@@ -818,17 +857,14 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
                 cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL, text=False, bufsize=0, start_new_session=True)
         except FileNotFoundError as e:
-            return {"ok": False, "error": f"launch failed: {e}", "model": model,
-                    "latency_ms": 0, "enforced": enforced}
+            return {"rc": None, "output": "", "killed": False, "launch_error": str(e)}
         # pid file: if this worker is SIGKILLed, the reaper kills this pgid
         (LOGS_DIR / f"{tid}.pid").write_text(str(proc.pid))
-        output_chunks: list[bytes] = []
         sel = _selectors.DefaultSelector()
         try:
             assert proc.stdout is not None
             sel.register(proc.stdout, _selectors.EVENT_READ)
             buf = b""
-            killed = False
             hb_next = t0 + HB_TICK_SEC
             while True:
                 if proc.poll() is not None:
@@ -896,10 +932,6 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
                 killed = True
             if killed:
                 lf.write(f"\n=== TIMEOUT after {timeout}s, killed ===\n")
-                return {"ok": False, "error": f"task timed out after {timeout}s",
-                        "model": model, "latency_ms": int((time.time() - t0) * 1000),
-                        "enforced": enforced,
-                        "partial": b"".join(output_chunks).decode(errors="replace")[-2000:]}
         finally:
             sel.close()
             lf.flush()
@@ -907,10 +939,79 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
                 (LOGS_DIR / f"{tid}.pid").unlink()  # child is done; no orphan to reap
             except OSError:
                 pass
+    return {"rc": rc, "output": b"".join(output_chunks).decode(errors="replace"),
+            "killed": killed, "launch_error": None}
+
+
+def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
+    """Execute one task. Returns outcome dict (no DB writes here)."""
+    tid = task["id"]
+    workdir = task.get("_cwd") or str(HERE)
+    pinned = (task.get("model") or "").strip()
+    if pinned and not task_store._MODEL_ID.fullmatch(pinned):
+        # argv safety: a model string that could pass CLI flags is not a model
+        print(f"task {tid}: invalid model {pinned!r} — falling back to worker default", flush=True)
+        pinned = ""
+    model, model_note = resolve_model(pinned)
+    if model_note:
+        log(f"{tid}: {model_note}")
+        _notify_model_reroute(pinned or default_model(), model)
+    timeout = max(30, min(int(task.get("timeout_sec") or 600), 1800))
+    permission = task.get("permission") or "full"
+    # Enforcement truth table (verified by probing, Oct 2026):
+    # - readonly: writes reverted after the run (true enforcement, see process_one)
+    # - no-network: prompt-level only — OS-deny bricks cloud models (they need
+    #   network for inference) and the background server escapes sandbox-exec.
+    # - no-shell: prompt-level only (opencode run has no tool-restriction flag).
+    enforced = False  # set True below only if readonly revert removes files
+    # --standalone: keeps the whole process tree under our CLI child, so the
+    # reaper can enumerate and kill descendants. Plain mode spawns shell-tool
+    # children under the shared `opencode-cli serve --service` daemon in their
+    # own pgids — invisible to us and unkillable by task (probed Oct 2026).
+    # It (and any future optional flag) is added only when THIS binary's help
+    # advertises it, and stripped by a retry if the variant rejects it anyway:
+    # no version tables, no blind flags — every build runs.
+    # --title: argv marker (br-<tid>-a<n>) identifying OUR CLI child in ps
+    # output — the reaper/sweep match on it, so pid reuse can't misdirect a
+    # kill. Per-attempt (no session bleed across retries). NOTE: --session
+    # cannot be used here: it makes free-tier models refuse to run.
+    optional_flags = supported_run_flags()
+    log_path = LOGS_DIR / f"{tid}.log"
+    t0 = time.time()
+    while True:
+        cmd = [OPENCODE_BIN, "run", *optional_flags,
+               "--title", _title_marker(tid, attempt_no),
+               "--auto", "--model", model,
+               build_prompt(task, dep_outputs)]
+        attempt = _run_cli_attempt(
+            cmd, workdir, log_path, tid, timeout,
+            f"\n=== attempt starting {datetime.now(timezone.utc).isoformat()} "
+            f"model={model} permission={permission} ===\n")
+        if attempt["launch_error"] is not None:
+            return {"ok": False, "error": f"launch failed: {attempt['launch_error']}",
+                    "model": model, "latency_ms": int((time.time() - t0) * 1000),
+                    "enforced": enforced}
+        rc = attempt["rc"]
+        # strip ANSI color codes opencode emits (keeps logs/structured clean)
+        output = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", attempt["output"]).strip()
+        if attempt["killed"]:
+            return {"ok": False, "error": f"task timed out after {timeout}s",
+                    "model": model, "latency_ms": int((time.time() - t0) * 1000),
+                    "enforced": enforced, "partial": output[-2000:]}
+        if (optional_flags and rc != 0
+                and _looks_like_argv_reject(output, time.time() - t0)):
+            # this variant rejects an optional flag despite advertising it (or
+            # its help couldn't be read): drop them and retry ONCE, so an
+            # unknown build degrades gracefully instead of failing the task
+            log(f"{tid}: opencode rejected {' '.join(optional_flags)} "
+                f"(exit {rc}, help dump); retrying without optional flags")
+            with open(log_path, "a") as lf:
+                lf.write(f"\n=== retrying without {' '.join(optional_flags)} "
+                         f"(exit {rc}, help dump) ===\n")
+            optional_flags = []
+            continue
+        break
     latency_ms = int((time.time() - t0) * 1000)
-    output = b"".join(output_chunks).decode(errors="replace").strip()
-    # strip ANSI color codes opencode emits (keeps logs/structured clean)
-    output = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", output)
     if rc != 0:
         detail = output[-2000:] if output else f"exit {rc} with no output"
         outcome = {"ok": False, "error": f"opencode exited {rc}: {detail}",
