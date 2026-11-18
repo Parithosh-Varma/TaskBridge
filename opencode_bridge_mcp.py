@@ -177,6 +177,7 @@ def submit_task(title: str, instructions: str, working_dir: str = "", model: str
                tags: list[str] | None = None, idempotency_key: str = "",
                permission: str = "full", worktree_repo: str = "",
                worktree_branch: str = "", worktree_keep: bool = False,
+               session_id: str = "",
                origin: str = "", ctx: Context | None = None) -> dict:
     """Submit a task for the OpenCode agent to run.
 
@@ -198,6 +199,11 @@ def submit_task(title: str, instructions: str, working_dir: str = "", model: str
         worktree_repo: Git repo to scope the task in via `git worktree add`.
         worktree_branch: Branch for the worktree (default: repo HEAD).
         worktree_keep: Keep the worktree after success (default removes it).
+        session_id: Existing OpenCode session to continue (e.g. 'ses_...').
+            Mutually exclusive with worktree_*. When set, the run appends
+            `--session <id>` and (if working_dir is empty) inherits the
+            session's directory from OpenCode's own DB. Use this to message
+            a live window like AGENT1 instead of starting a fresh run.
         origin: Optional override ('chatgpt' etc.). Empty = auto-detected
             from your MCP handshake, shown as the origin mark on the board.
     Returns:
@@ -211,7 +217,7 @@ def submit_task(title: str, instructions: str, working_dir: str = "", model: str
         max_retries=max_retries, retry_model=retry_model, tags=tags or [],
         idem_key=idempotency_key, permission=permission,
         worktree_repo=worktree_repo, worktree_branch=worktree_branch,
-        worktree_keep=worktree_keep)
+        worktree_keep=worktree_keep, session_id=session_id)
     if task.pop("_deduped", False):
         task["_note"] = "idempotency_key already seen — returning the original task."
     else:
@@ -292,7 +298,7 @@ def submit_batch(tasks: list[dict], origin: str = "", ctx: Context | None = None
     """Submit multiple tasks at once. Each item accepts the submit_task fields:
     {title, instructions, working_dir?, model?, depends_on?, priority?,
     timeout_sec?, max_retries?, retry_model?, tags?, idempotency_key?,
-    permission?, worktree_repo?, worktree_branch?, worktree_keep?}.
+    permission?, worktree_repo?, worktree_branch?, worktree_keep?, session_id?}.
 
     origin is an optional override; empty = auto-detected from your
     MCP handshake and applied to the whole batch.
@@ -316,6 +322,7 @@ def submit_batch(tasks: list[dict], origin: str = "", ctx: Context | None = None
             worktree_repo=t.get("worktree_repo", ""),
             worktree_branch=t.get("worktree_branch", ""),
             worktree_keep=t.get("worktree_keep", False),
+            session_id=t.get("session_id", ""),
         )
         if task.pop("_deduped", False):
             task["_note"] = "idempotency_key already seen — returning the original task."

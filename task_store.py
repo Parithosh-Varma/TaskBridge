@@ -33,6 +33,7 @@ VALID_STATUSES = {"pending", "running", "completed", "failed", "cancelled", "wai
 # plain identifier characters so a model value can't smuggle CLI flags or
 # whitespace. Real ids look like `opencode/deepseek-v4.1-flash-free` or `qwen3-coder`.
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:\-]{0,119}$")
+_SESSION_ID = re.compile(r"^ses_[A-Za-z0-9]+$")
 
 
 def _now() -> str:
@@ -55,6 +56,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE tasks ADD COLUMN worktree_repo TEXT DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN worktree_branch TEXT DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN worktree_keep INTEGER DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN session_id TEXT DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN usage_json TEXT DEFAULT '{}'",
         "ALTER TABLE tasks ADD COLUMN structured_json TEXT DEFAULT '{}'",
         "ALTER TABLE tasks ADD COLUMN questions_json TEXT DEFAULT '[]'",
@@ -89,7 +91,7 @@ def submit_task(title: str, instructions: str, working_dir: str = "", created_by
                 timeout_sec: int = 600, max_retries: int = 0, retry_model: str = "",
                 tags=None, idem_key: str = "", permission: str = "full",
                 worktree_repo: str = "", worktree_branch: str = "",
-                worktree_keep: bool = False) -> dict:
+                worktree_keep: bool = False, session_id: str = "") -> dict:
     title = (title or "").strip()
     instructions = (instructions or "").strip()
     if not title:
@@ -104,6 +106,11 @@ def submit_task(title: str, instructions: str, working_dir: str = "", created_by
     for m in (model, retry_model):
         if m and not _MODEL_ID.fullmatch(m):
             raise ValueError(f"invalid model id: {m!r} — letters, digits and ./_:- only")
+    session_id = (session_id or "").strip()
+    if session_id and not _SESSION_ID.fullmatch(session_id):
+        raise ValueError(f"invalid session id: {session_id!r} — must look like 'ses_...'")
+    if session_id and worktree_repo:
+        raise ValueError("session_id and worktree_repo are mutually exclusive")
     depends_on = list(depends_on or [])
     task_id = uuid.uuid4().hex[:12]
     now = _now()
@@ -117,15 +124,15 @@ def submit_task(title: str, instructions: str, working_dir: str = "", created_by
         conn.execute(
             "INSERT INTO tasks (id, title, instructions, working_dir, model, depends_on,"
             " priority, timeout_sec, max_retries, retry_model, attempts, tags, idem_key,"
-            " permission, worktree_repo, worktree_branch, worktree_keep,"
+            " permission, worktree_repo, worktree_branch, worktree_keep, session_id,"
             " status, created_by, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
             (task_id, title, instructions, working_dir or "", model,
              json.dumps(depends_on), int(priority or 0),
              max(30, min(int(timeout_sec or 600), 1800)), max(0, min(int(max_retries or 0), 5)),
              retry_model, _as_json_list(tags), idem_key or None,
              permission, worktree_repo or "", worktree_branch or "",
-             1 if worktree_keep else 0, created_by, now, now),
+             1 if worktree_keep else 0, session_id, created_by, now, now),
         )
     return get_task(task_id)
 

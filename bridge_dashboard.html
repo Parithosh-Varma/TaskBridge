@@ -594,11 +594,22 @@
 
   // ---------------------------------------------------------------- bearer token
   var BRIDGE_TOKEN_KEY = "bridge_auth_token";
-  var token = sessionStorage.getItem(BRIDGE_TOKEN_KEY);
+  function _storeGet(k){ try { return localStorage.getItem(k) || sessionStorage.getItem(k); } catch(e){ try { return sessionStorage.getItem(k); } catch(_){ return null; } } }
+  function _storeSet(k,v){ try { localStorage.setItem(k,v); } catch(e){} try { sessionStorage.setItem(k,v); } catch(e){} }
+  function _storeDel(k){ try { localStorage.removeItem(k); } catch(e){} try { sessionStorage.removeItem(k); } catch(e){} }
+  // zero-setup: taskbridge --open passes #token=... once; save + strip from URL
+  try {
+    if (location.hash && location.hash.indexOf("#token=") === 0) {
+      var _ht = decodeURIComponent(location.hash.slice(7).trim());
+      if (_ht) { _storeSet(BRIDGE_TOKEN_KEY, _ht); }
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  } catch(e){}
+  var token = _storeGet(BRIDGE_TOKEN_KEY);
   if (!token) {
     var promptToken = prompt("Paste your TaskBridge bearer token to open the dispatch board:");
     if (promptToken) {
-      sessionStorage.setItem(BRIDGE_TOKEN_KEY, promptToken.trim());
+      _storeSet(BRIDGE_TOKEN_KEY, promptToken.trim());
       token = promptToken.trim();
     } else {
       document.body.innerHTML =

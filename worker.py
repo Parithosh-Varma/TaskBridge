@@ -277,6 +277,7 @@ TITLE_PREFIX = f"br-{REPO_TAG}-"
 # tier: any explicit --session makes `opencode run` reject free models with
 # "free tier can only be used from within OpenCode" (probed Oct 2026).
 # Ps-visible, travels with the process, unforgeable by pid reuse.
+_SESSION_ID = re.compile(r"^ses_[A-Za-z0-9]+$")
 TREE_KILL_ROUNDS = 4
 TREE_KILL_MAX = 300  # refuse bigger trees: a matching bug must never mass-kill
 
@@ -759,8 +760,32 @@ def teardown_worktree(task: dict, cwd: str, success: bool) -> str:
 
 # ---------------- task execution ----------------
 
+def _session_dir(session_id: str) -> str:
+    """Directory of an existing OpenCode session (from its own DB).
+
+    Returns "" when unknown — caller falls back to the task working_dir.
+    Never raises: a missing DB must not wedge the queue.
+    """
+    try:
+        import sqlite3 as _sqlite3
+        db = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+        if not db.exists():
+            return ""
+        conn = _sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT directory FROM session_v2 WHERE id = ?", (session_id,)).fetchone()
+        finally:
+            conn.close()
+        return (row[0] if row and row[0] else "") or ""
+    except Exception as e:
+        log(f"session lookup failed for {session_id}: {e}")
+        return ""
+
+
 def build_prompt(task: dict, dep_outputs: list[dict]) -> str:
     permission = task.get("permission") or "full"
+    sid = (task.get("session_id") or "").strip()
     parts = [
         "You are the OpenCode worker fulfilling a task from Claude via the MCP bridge.",
         f"Task title: {task['title']}",
@@ -768,6 +793,11 @@ def build_prompt(task: dict, dep_outputs: list[dict]) -> str:
         f"Your working directory is: {task['_cwd']}",
         "You are already running inside it. Create, read, and edit files ONLY under "
         "this exact absolute path — never in any other directory.",
+    ]
+    if sid:
+        parts.append(f"You are CONTINUING existing OpenCode session {sid} — "
+                     "its history is already loaded; do not restart the work.")
+    parts += [
         "",
         f"Instructions:\n{task['instructions']}",
     ]
@@ -974,15 +1004,22 @@ def run_task(task: dict, dep_outputs: list[dict], attempt_no: int = 0) -> dict:
     # --title: argv marker (br-<tid>-a<n>) identifying OUR CLI child in ps
     # output — the reaper/sweep match on it, so pid reuse can't misdirect a
     # kill. Per-attempt (no session bleed across retries). NOTE: --session
-    # cannot be used here: it makes free-tier models refuse to run.
+    # forces paid-tier inference (free tier rejects it) — only added when the
+    # task explicitly targets an existing session.
+    sid = (task.get("session_id") or "").strip()
+    if sid and not _SESSION_ID.fullmatch(sid):
+        log(f"{tid}: invalid session_id {sid!r} — running fresh instead")
+        sid = ""
     optional_flags = supported_run_flags()
     log_path = LOGS_DIR / f"{tid}.log"
     t0 = time.time()
     while True:
         cmd = [OPENCODE_BIN, "run", *optional_flags,
                "--title", _title_marker(tid, attempt_no),
-               "--auto", "--model", model,
-               build_prompt(task, dep_outputs)]
+               "--auto", "--model", model]
+        if sid:
+            cmd += ["--session", sid]
+        cmd += [build_prompt(task, dep_outputs)]
         attempt = _run_cli_attempt(
             cmd, workdir, log_path, tid, timeout,
             f"\n=== attempt starting {datetime.now(timezone.utc).isoformat()} "
@@ -1061,8 +1098,14 @@ def process_one(task: dict) -> None:
         return
     if not ready:
         return  # deps still running; try next pass
-    # working dir (created if missing)
-    workdir = task.get("working_dir") or str(HERE)
+    # working dir (created if missing). With session_id and no explicit
+    # working_dir, inherit the session's own directory from OpenCode's DB
+    # so the continuation runs where that window lives.
+    workdir = (task.get("working_dir") or "").strip()
+    sid = (task.get("session_id") or "").strip()
+    if not workdir and sid:
+        workdir = _session_dir(sid)
+    workdir = workdir or str(HERE)
     try:
         os.makedirs(workdir, exist_ok=True)
     except OSError as e:
